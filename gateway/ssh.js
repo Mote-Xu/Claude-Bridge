@@ -18,12 +18,13 @@ async function execClaude(sessionId, message, options = {}) {
 
       // Windows: 用 echo + pipe 把消息喂给 claude --resume
       // claude --resume <id> 进入交互模式，从 stdin 读取
+      const claudeBin = 'C:\\Users\\Mote\\AppData\\Roaming\\npm\\claude.cmd';
       const cmd = [
-        cwd && cwd.length > 2 ? `${cwd.slice(0,2)}` : '',  // 切换到盘符
+        cwd && cwd.length > 2 ? `${cwd.slice(0,2)}` : '',
         cwd ? `cd /d "${cwd}"` : '',
         sessionId
-          ? `echo ${escaped}| claude --resume "${sessionId}"`
-          : `echo ${escaped}| claude`,
+          ? `echo ${escaped}| "${claudeBin}" --resume "${sessionId}"`
+          : `echo ${escaped}| "${claudeBin}"`,
       ].filter(Boolean).join(' && ');
 
       conn.exec(cmd, { pty: false }, (err, stream) => {
