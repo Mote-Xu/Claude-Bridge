@@ -125,11 +125,50 @@ agent/            ← Windows 本地运行
 
 ---
 
+## ??? 卡住的问题：SSH fallback 权限锁定
+
+### 场景
+
+当前架构：
+- **主通道**：Agent HTTP（5 个 API 严格限定，安全可控）
+- **SSH fallback**：Agent 不可用时，mote-home 通过 SSH 在 Windows 上执行命令
+
+### 安全问题
+
+SSH fallback 拥有**完整 Shell 权限**（以 Mote 身份执行任意命令）。虽然 Tailscale 提供网络层隔离，但如果 tailnet 内任意设备被入侵，攻击者可拿到 mote-home → SSH 进 Windows 做任何事。
+
+### 尝试过的方案
+
+**方案 1：authorized_keys `command=` 限制**
+```
+command="powershell -NoProfile -NonInteractive -EncodedCommand ${SSH_ORIGINAL_COMMAND}",no-port-forwarding,no-pty ssh-rsa AAA...
+```
+- 预期：SSH 发过来的命令被当作 Base64 传给 `powershell -EncodedCommand`
+- 实际：无论发什么（裸 Base64 或完整命令），PowerShell 都报 "编码值不是有效的 Base64 格式"
+- 结论：Windows OpenSSH 的 `command=` 实现与 `-EncodedCommand` 参数传递有兼容问题，可能 `${SSH_ORIGINAL_COMMAND}` 在被替换时加了引号或换行导致 Base64 损坏
+
+**方案 2：sshd_config `ForceCommand`**（未测试）
+- 在 `C:\ProgramData\ssh\sshd_config` 中添加：
+```
+Match User Mote
+  ForceCommand powershell -NoProfile -NonInteractive -EncodedCommand ${SSH_ORIGINAL_COMMAND}
+```
+- 但 Win32-OpenSSH 的 ForceCommand 实现可能有同样的问题（GitHub Issue #1107）
+
+### 想问
+
+1. Windows OpenSSH 下有没有可靠的方法把 SSH 访问限制为「只能执行 PowerShell EncodedCommand」？
+2. 如果不能限制到单命令级别，有没有其他办法缩小 SSH fallback 的攻击面？（例如：只允许从特定 IP 连接、只允许特定时间窗口、失败后自动熔断）
+3. 或者说，Tailscale + 私钥保护 + Agent 主通道已经足够，SSH fallback 保持现状是可接受的风险？
+
+---
+
 ## 待改进
 
 - 🔲 流式输出（Claude 结果逐步推送到微信）
 - 🔲 Agent 鉴权（`X-Auth-Token`，Tailscale 隔离下暂时可接受）
 - 🔲 VS Code 会话可见性（pipe 模式限制，先电脑创建再手机续接可规避）
+- 🔲 SSH fallback 权限锁定（Windows OpenSSH command= 不兼容 EncodedCommand，待解决）
 
 ---
 
