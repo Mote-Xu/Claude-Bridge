@@ -42,7 +42,7 @@ Caddy + CF Tunnel:
   (走主 Tunnel 87fc0324)
 
 Windows (Mote-Office):
-  Clawd Agent: agent/index.js  (Express :9877, 开机自启)
+  Clawd Agent: agent/index.js  (Express :9877, 后台静默运行)
   Claude Code:  C:\Users\Mote\AppData\Roaming\npm\claude.cmd
   Tailscale IP: 100.80.205.79
   SSH 免密:     mote-home 公钥在 C:\ProgramData\ssh\administrators_authorized_keys
@@ -61,35 +61,40 @@ Windows (Mote-Office):
 | Gateway 健康 | `curl https://claude-tunnel.mote-pal.xyz/health` |
 | Agent 健康 | `curl http://100.80.205.79:9877/api/health` |
 | Agent 启动 | Windows 上 `node agent/index.js`（或 start.bat 快捷方式放 shell:startup） |
+| Agent 重载 | `curl -X POST http://127.0.0.1:9877/api/reload`（看门狗自动拉起） |
 
 ---
 
-## 当前状态 (v1.5 — 2026-07-03)
+## 当前状态 (v1.5 — 2026-07-04)
 
 ### 已工作
 - 企业微信消息接收/回复
 - Windows Agent HTTP 执行 Claude Code（主通道）
-- SSH 自动 fallback（Agent 不可用时）
+- SSH 自动 fallback（Agent 不可用时，全部走 PowerShell EncodedCommand）
 - `@会话名` 创建/续接会话
-- `claude --resume` 跨消息续接
-- 电脑历史会话列表显示
-- 多会话路由（@指定或唯一活跃自动路由）
+- `claude --resume` 跨消息续接（含 `cd /d` CWD 修复）
+- 电脑历史会话列表显示（含 aiTitle 标题、会话预览）
+- 多会话路由（@指定、序号选择、唯一活跃自动路由）
 - 退出项目 / 切换项目 / 重新接入
-- 电脑离线检测 + 任务排队
-- 项目自动发现（Agent 本地 fs 扫描，无转义问题）
+- 项目列表（60 秒序号窗口 + 项目名输入）
+- 电脑离线检测 + 任务排队 + 定时 drain
+- 项目自动发现（Agent 本地 fs 扫描 + SSH PS EncodedCommand 双通道）
 - 群聊模型：一个群 = 一个项目，群内 @Bot 发消息
-- Session lock 防护（续接会话前自动杀桌面端残留 Claude 进程）
-- CI=true + CLAUDE_NO_TUI=1 环境变量尝试改善 VS Code 会话可见性
-- 群事件自动欢迎（Bot 被拉入群时列出可用项目）
+- Session lock 防护（手机消息触发送 VS Code 窗口，回来自动恢复）
+- 已删除会话自动隐藏（读 VS Code state.vscdb 的 hiddenSessionIds）
+- 手动隐藏/取消隐藏会话命令
+- Agent 看门狗（Windows Task Scheduler 每 5 分钟检查，挂了自启）
+- Agent 后台静默运行（start-hidden.vbs）
+- Agent `/api/reload` 热重载
 
 ### 未完成
-- 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制，设 CI=true 可能改善但未验证）
-- 企业微信异步客服消息推送（目前靠 webhook 立即返回 200，处理异步）
+- 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
+- Windows OpenSSH `command=` 限制与 EncodedCommand 不兼容（已回退）
 
 ### 核心限制
 - `echo msg | claude` 创建的是 pipe 模式会话，VS Code 可能不显示但可用 `--resume` 续接
 - 电脑上先用 VS Code 创建会话，手机 `--resume` 续接，上下文完全保留
-- Agent 和电脑桌面端 Claude 不能同时操作同一会话（已加 taskkill 防护）
+- 手机发消息会关 VS Code 窗口，回电脑重开 VS Code 自动恢复所有会话
 
 ---
 
@@ -100,8 +105,8 @@ Windows (Mote-Office):
 | Gateway | Node.js + Express + better-sqlite3 |
 | Agent | Node.js + Express（Windows 本地 :9877） |
 | 消息 | 企业微信自建应用 (AgentID 1000003) |
-| 通信 | HTTP JSON（主）+ Tailscale SSH（fallback） |
-| 编码 | Agent 本地无编码问题；SSH fallback 用 Base64 → PowerShell |
+| 通信 | HTTP JSON（主）+ Tailscale SSH（fallback, 全部 PS EncodedCommand） |
+| 编码 | Agent 本地无编码问题；SSH fallback 用 utf16le Base64 → PowerShell |
 | 连接 | Tailscale (WireGuard) |
 
 ---
@@ -112,16 +117,33 @@ Windows (Mote-Office):
 gateway/
   index.js      — Express server + 消息路由 + 群聊逻辑
   agent.js      — HTTP 客户端，调 Windows Agent（SSH fallback）
-  ssh.js        — SSH 远程执行（fallback 用）
-  db.js         — SQLite 数据层（群绑定/会话/任务队列/审计）
+  ssh.js        — SSH 远程执行（fallback，全部 psExec）
+  db.js         — SQLite 数据层（群绑定/会话/任务队列/审计/隐藏）
   wecom.js      — 企业微信加解密 + 消息发送
   config.js     — 配置文件
 
-
 agent/
-  index.js      — Windows Agent Express 服务
-  start.bat     — 开机自启脚本
+  index.js        — Windows Agent Express 服务 (6 API)
+  start.bat       — 开机自启脚本
+  start-hidden.vbs — 后台静默启动
+  watchdog.ps1    — 看门狗脚本（Task Scheduler 每 5 分钟）
+  setup-firewall.bat — 防火墙规则（一次性管理员运行）
+  setup-watchdog.bat — 看门狗注册（一次性管理员运行）
 ```
+
+---
+
+## Agent API
+
+| 接口 | 功能 |
+|------|------|
+| `GET /api/health` | 在线检测 |
+| `POST /api/discover` | 扫描 `.claude\projects\`，按最近活跃排序 |
+| `POST /api/list-sessions` | 列 JSONL 文件，含 aiTitle 摘要 |
+| `POST /api/run-claude` | 本地 pipe 调 `claude.cmd --resume` |
+| `POST /api/session-preview` | 话题消息 + 最近几轮 + 统计 |
+| `GET /api/hidden-sessions` | 读 VS Code state.vscdb 取隐藏会话 ID |
+| `POST /api/reload` | 退出进程（看门狗自动拉起 = 热重载） |
 
 ---
 
