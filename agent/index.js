@@ -100,22 +100,15 @@ app.post('/api/run-claude', (req, res) => {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: 杀所有 node 进程（Agent 自己除外），防止 session lock
-    // VS Code 会从 session index 自动恢复被杀的会话，无需额外机制
+    // Step 2: VS Code 重新加载窗口（保存状态 → 关终端 → 自动恢复所有会话）
+    // 这样回来后重开 VS Code，Claude 终端会自动恢复并读到最新的 JSONL
     if (sessionId) {
       try {
-        const killScript = [
-          `$agentPid = ${process.pid}`,
-          `Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue |`,
-          `  Where-Object { $_.ProcessId -ne $agentPid } |`,
-          `  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-          `exit 0`
-        ].join('\n');
-        const killFile = path.join(os.tmpdir(), 'clawd-kill.ps1');
-        fs.writeFileSync(killFile, killScript, 'utf-8');
-        execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${killFile}"`, { timeout: 5000, windowsHide: true });
-        try { fs.unlinkSync(killFile); } catch {}
-      } catch {} // 杀进程失败不阻塞
+        // 调 code CLI 发送 reload 命令（等效于 Ctrl+Shift+P → Reload Window）
+        execSync(`code --command workbench.action.reloadWindow`, { timeout: 5000, windowsHide: true });
+        // 等 VS Code 保存状态
+        execSync(`timeout /t 2 /nobreak >nul`, { timeout: 3000, windowsHide: true });
+      } catch {} // VS Code 没开着也不阻塞
 
     // Step 2.5: 注册会话到 Claude Code 索引（--resume 查索引不查文件）
     if (sessionId) {
