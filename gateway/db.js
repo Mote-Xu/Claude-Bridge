@@ -36,7 +36,14 @@ function init(dbPath) {
       processed_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS audit_log (
+    CREATE TABLE IF NOT EXISTS hidden_sessions (
+	      chat_id TEXT NOT NULL,
+	      claude_session_id TEXT NOT NULL,
+	      hidden_at TEXT DEFAULT (datetime('now')),
+	      PRIMARY KEY (chat_id, claude_session_id)
+	    );
+
+	    CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT,
       session_id INTEGER,
@@ -121,6 +128,20 @@ function auditLog(chatId, sessionId, direction, content) {
     .run(chatId, sessionId, direction, content);
 }
 
+// === Hidden Sessions ===
+function hideSession(chatId, claudeSessionId) {
+  return db.prepare('INSERT OR IGNORE INTO hidden_sessions (chat_id, claude_session_id) VALUES (?, ?)')
+    .run(chatId, claudeSessionId);
+}
+function unhideSession(chatId, claudeSessionId) {
+  return db.prepare('DELETE FROM hidden_sessions WHERE chat_id = ? AND claude_session_id = ?')
+    .run(chatId, claudeSessionId);
+}
+function getHiddenSessionIds(chatId) {
+  return db.prepare('SELECT claude_session_id FROM hidden_sessions WHERE chat_id = ?')
+    .all(chatId).map(r => r.claude_session_id);
+}
+
 // === Remove ===
 function removeGroup(chatId) {
   db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId);
@@ -133,5 +154,6 @@ module.exports = {
   getSessionByName, getActiveSessions, listSessions,
   createSession, updateClaudeSessionId, touchSession, updateSessionStatus,
   enqueueTask, getPendingTasks, getAllPendingTasks, markTaskProcessed,
+  hideSession, unhideSession, getHiddenSessionIds,
   auditLog,
 };
