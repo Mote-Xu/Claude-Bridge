@@ -85,12 +85,22 @@ app.post('/api/run-claude', (req, res) => {
     fs.writeFileSync(msgFile, message, 'utf-8');
 
     // Step 2: 续接会话时杀残留进程，防止 session lock
+    // MainWindowTitle 对 CLI 进程无效 → 改用 Get-CimInstance 查命令行
     if (sessionId) {
       try {
-        execSync(
-          `powershell -NoProfile -Command "Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Claude*' } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"`,
-          { timeout: 5000 }
-        );
+        const killScript = [
+          `$procs = Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue`,
+          `foreach ($p in $procs) {`,
+          `  if ($p.CommandLine -and $p.CommandLine -like '*claude*') {`,
+          `    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue`,
+          `  }`,
+          `}`,
+          `exit 0`
+        ].join('\n');
+        const killFile = path.join(os.tmpdir(), 'clawd-kill.ps1');
+        fs.writeFileSync(killFile, killScript, 'utf-8');
+        execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${killFile}"`, { timeout: 5000, windowsHide: true });
+        try { fs.unlinkSync(killFile); } catch {}
       } catch {} // 杀进程失败不阻塞
     }
 

@@ -103,6 +103,17 @@ function getPendingTasks(chatId) {
     "SELECT * FROM task_queue WHERE chat_id = ? AND status = 'pending' ORDER BY created_at"
   ).all(chatId);
 }
+// 获取所有待处理任务（跨群），用于自动 drain
+function getAllPendingTasks() {
+  return db.prepare(
+    "SELECT * FROM task_queue WHERE status = 'pending' ORDER BY created_at"
+  ).all();
+}
+function markTaskProcessed(id) {
+  return db.prepare(
+    "UPDATE task_queue SET status = 'processed', processed_at = datetime('now') WHERE id = ?"
+  ).run(id);
+}
 
 // === Audit ===
 function auditLog(chatId, sessionId, direction, content) {
@@ -121,6 +132,6 @@ module.exports = {
   getGroup, addGroup, removeGroup,
   getSessionByName, getActiveSessions, listSessions,
   createSession, updateClaudeSessionId, touchSession, updateSessionStatus,
-  enqueueTask, getPendingTasks,
+  enqueueTask, getPendingTasks, getAllPendingTasks, markTaskProcessed,
   auditLog,
 };

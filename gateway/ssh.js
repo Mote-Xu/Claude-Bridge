@@ -37,12 +37,18 @@ async function execClaude(sessionId, message, options = {}) {
 
   // Step 2: 续接会话时先杀掉桌面端残留 Claude 进程，防止 session lock 冲突
   // 手机发消息 = 人不在电脑前，安全杀掉桌面端 Claude
+  // 用 Get-CimInstance 查命令行而非 MainWindowTitle（CLI 进程无窗口标题）
   if (sessionId) {
     try {
-      await sshExec(
-        `powershell -NoProfile -Command "Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Claude*' } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"`,
-        5000
-      );
+      const killPsScript = `$procs = Get-CimInstance Win32_Process -Filter "name='node.exe'" -EA 0
+foreach ($p in $procs) {
+  if ($p.CommandLine -and $p.CommandLine -like '*claude*') {
+    Stop-Process -Id $p.ProcessId -Force -EA 0
+  }
+}
+exit 0`;
+      const killEnc = Buffer.from(killPsScript, 'utf16le').toString('base64');
+      await sshExec(`powershell -NoProfile -EncodedCommand ${killEnc}`, 5000);
     } catch {} // 杀进程失败不阻塞
   }
 

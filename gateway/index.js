@@ -1,6 +1,6 @@
 const express = require('express');
 const config = require('./config');
-const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
+const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, markTaskProcessed, auditLog } = require('./db');
 const wecom = require('./wecom');
 // Agent HTTP 优先，SSH 自动 fallback
 const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./agent');
@@ -231,4 +231,43 @@ app.post('/webhook', async (req, res) => {
   res.send('success');
 });
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+// 定时 drain：每 30 秒检查电脑是否恢复在线，自动重试 pending 任务
+let drainRunning = false;
+async function drainPendingTasks() {
+  if (drainRunning) return;
+  drainRunning = true;
+  try {
+    const online = await healthCheck();
+    if (!online) return;
+
+    const tasks = getAllPendingTasks();
+    if (tasks.length === 0) return;
+
+    console.log(`Drain: ${tasks.length} pending task(s), computer is online`);
+    for (const task of tasks) {
+      const group = getGroup(task.chat_id);
+      if (!group) {
+        markTaskProcessed(task.id);
+        continue;
+      }
+      try {
+        await reply(task.chat_id, task.sender, `📤 重试排队任务...`);
+        const result = await execClaude(null, task.message, { cwd: group.project_path });
+        const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
+        await reply(task.chat_id, task.sender, output);
+      } catch (err) {
+        console.error(`Drain task ${task.id} failed:`, err.message);
+        await reply(task.chat_id, task.sender, `❌ 排队任务失败: ${err.message.slice(0, 200)}`);
+      }
+      markTaskProcessed(task.id);
+    }
+  } catch (err) {
+    console.error('Drain error:', err.message);
+  } finally {
+    drainRunning = false;
+  }
+}
+setInterval(drainPendingTasks, 30000);
+
 app.listen(config.port, '127.0.0.1', () => console.log(`clawd Gateway on 127.0.0.1:${config.port}`));
