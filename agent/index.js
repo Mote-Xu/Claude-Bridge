@@ -100,17 +100,15 @@ app.post('/api/run-claude', (req, res) => {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: 续接会话时杀残留进程，防止 session lock
-    // MainWindowTitle 对 CLI 进程无效 → 改用 Get-CimInstance 查命令行
+    // Step 2: 续接会话时杀所有 node 进程（Agent 自己除外），防止 session lock
+    // 手机发消息 = 人不在电脑前，安全杀除 Agent 外的所有 node 进程
     if (sessionId) {
       try {
         const killScript = [
-          `$procs = Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue`,
-          `foreach ($p in $procs) {`,
-          `  if ($p.CommandLine -and $p.CommandLine -like '*claude*') {`,
-          `    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue`,
-          `  }`,
-          `}`,
+          `$agentPid = ${process.pid}`,
+          `Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue |`,
+          `  Where-Object { $_.ProcessId -ne $agentPid } |`,
+          `  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
           `exit 0`
         ].join('\n');
         const killFile = path.join(os.tmpdir(), 'clawd-kill.ps1');
@@ -118,7 +116,6 @@ app.post('/api/run-claude', (req, res) => {
         execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${killFile}"`, { timeout: 5000, windowsHide: true });
         try { fs.unlinkSync(killFile); } catch {}
       } catch {} // 杀进程失败不阻塞
-    }
 
     // Step 2.5: 注册会话到 Claude Code 索引（--resume 查索引不查文件）
     if (sessionId) {

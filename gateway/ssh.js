@@ -35,17 +35,11 @@ async function execClaude(sessionId, message, options = {}) {
   const writeEnc = Buffer.from(writeScript, 'utf16le').toString('base64');
   await sshExec(`powershell -NoProfile -NonInteractive -EncodedCommand ${writeEnc}`, 10000);
 
-  // Step 2: 续接会话时先杀掉桌面端残留 Claude 进程，防止 session lock 冲突
-  // 手机发消息 = 人不在电脑前，安全杀掉桌面端 Claude
-  // 用 Get-CimInstance 查命令行而非 MainWindowTitle（CLI 进程无窗口标题）
+  // Step 2: 续接会话时杀所有 node 进程，防止 session lock 冲突
+  // 手机发消息 = 人不在电脑前，安全全杀
   if (sessionId) {
     try {
-      const killPsScript = `$procs = Get-CimInstance Win32_Process -Filter "name='node.exe'" -EA 0
-foreach ($p in $procs) {
-  if ($p.CommandLine -and $p.CommandLine -like '*claude*') {
-    Stop-Process -Id $p.ProcessId -Force -EA 0
-  }
-}
+      const killPsScript = `Get-CimInstance Win32_Process -Filter "name='node.exe'" -EA 0 | Stop-Process -Force -EA 0
 exit 0`;
       const killEnc = Buffer.from(killPsScript, 'utf16le').toString('base64');
       await sshExec(`powershell -NoProfile -EncodedCommand ${killEnc}`, 5000);
