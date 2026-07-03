@@ -100,18 +100,16 @@ app.post('/api/run-claude', (req, res) => {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: VS Code 重新加载窗口（保存状态 → 关终端 → 自动恢复所有会话）
-    // 这样回来后重开 VS Code，Claude 终端会自动恢复并读到最新的 JSONL
+    // Step 2: 关 VS Code（保存状态 → 下次打开自动恢复所有会话和终端）
+    // 手机发消息 = 人不在电脑前，安全关闭 VS Code
     if (sessionId) {
       try {
-        // 调 code CLI 发送 reload 命令（等效于 Ctrl+Shift+P → Reload Window）
-        execSync(`code --command workbench.action.reloadWindow`, { timeout: 5000, windowsHide: true });
-        // 等 VS Code 保存状态
+        // taskkill 关 code.exe（会先保存状态再退出）
+        execSync(`taskkill /f /im code.exe`, { timeout: 5000, windowsHide: true });
         execSync(`timeout /t 2 /nobreak >nul`, { timeout: 3000, windowsHide: true });
       } catch {} // VS Code 没开着也不阻塞
 
-    // Step 2.5: 注册会话到 Claude Code 索引（--resume 查索引不查文件）
-    if (sessionId) {
+      // 注册会话到 Claude Code 索引（--resume 查索引不查文件）
       try {
         const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
         // 检查是否已在索引中
