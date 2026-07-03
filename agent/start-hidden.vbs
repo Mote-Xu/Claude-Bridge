@@ -1,2 +1,8 @@
-' 静默启动 Clawd Agent，完全无窗口
-CreateObject("Wscript.Shell").Run "node " & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\index.js", 0, False
+Dim Shell, agentPath
+Set Shell = CreateObject("WScript.Shell")
+agentPath = "D:\Node.js\node.exe ""e:\Desktop\Claude-Bridge\agent\index.js"""
+
+Do
+    Shell.Run agentPath, 0, True
+    WScript.Sleep 5000
+Loop
