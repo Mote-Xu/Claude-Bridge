@@ -239,12 +239,19 @@ app.post('/api/list-sessions', (req, res) => {
             const json = JSON.parse(line);
             if (json.type === 'user' && json.message?.content?.[0]?.text) {
               const text = json.message.content[0].text;
-              // 跳过 IDE 事件和 skill 系统模板
-              if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+              // 跳过 IDE 事件
+              if (/^<[a-z_]+>/.test(text)) continue;
+              // skill 调用：取 ARGUMENTS
+              let displayText = text;
+              if (text.startsWith('Base directory for')) {
+                const argsMatch = text.match(/\nARGUMENTS:\s*(.+)$/);
+                if (argsMatch) { displayText = argsMatch[1]; }
+                else { continue; }
+              }
               hasUserMessage = true;
               // 优先取第一条实质消息（>= 10 字符），短指令不做摘要
-              if (!summary || (summary.length < 10 && text.length >= 10)) {
-                summary = text.replace(/\n/g, ' ').slice(0, 60);
+              if (!summary || (summary.length < 10 && displayText.length >= 10)) {
+                summary = displayText.replace(/\n/g, ' ').slice(0, 60);
               }
             }
           } catch {} // skip unparseable lines
@@ -318,20 +325,30 @@ app.post('/api/session-preview', (req, res) => {
         const j = JSON.parse(line);
         if (j.type === 'user' && j.message?.content?.[0]?.text) {
           const text = j.message.content[0].text;
-          // 跳过 IDE 事件、skill 系统模板
-          if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+          // 跳过 IDE 事件
+          if (/^<[a-z_]+>/.test(text)) continue;
+          // skill 调用：从 ARGUMENTS 提取用户真正输入的内容
+          let displayText = text;
+          if (text.startsWith('Base directory for')) {
+            const argsMatch = text.match(/\nARGUMENTS:\s*(.+)$/);
+            if (argsMatch) {
+              displayText = argsMatch[1]; // 用户实际输入的参数
+            } else {
+              continue; // 没有参数就跳过整条
+            }
+          }
           userCount++;
           // 第一条"实质"消息：跳过短指令（< 10 字符），取第一条真问题
           if (!foundSubstantial) {
-            if (text.length >= 10) {
-              firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+            if (displayText.length >= 10) {
+              firstMsg = displayText.replace(/\n/g, ' ').slice(0, 200);
               foundSubstantial = true;
-            } else if (!firstMsg) {
-              firstMsg = text.replace(/\n/g, ' ').slice(0, 100);
+            } else if (!firstMsg && displayText.length >= 1) {
+              firstMsg = displayText.replace(/\n/g, ' ').slice(0, 100);
             }
           }
           if (currentUser) rounds.push({ user: currentUser, assistant: '' });
-          currentUser = text;
+          currentUser = displayText;
         }
         if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
           assistantCount++;
