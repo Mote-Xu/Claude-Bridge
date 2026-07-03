@@ -239,12 +239,15 @@ app.post('/api/list-sessions', (req, res) => {
             const json = JSON.parse(line);
             if (json.type === 'user' && json.message?.content?.[0]?.text) {
               const text = json.message.content[0].text;
-              // 跳过 IDE 事件消息和 skill 系统消息
-              if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+              // 跳过 IDE 事件
+              if (/^<[a-z_]+>/.test(text)) continue;
+              // skill 消息：剥离前缀
+              const cleanText = text.startsWith('Base directory for this skill:')
+                ? text.replace(/^Base directory for this skill:[^\n]*\n\n/, '') : text;
               hasUserMessage = true;
               // 优先取第一条实质消息（>= 10 字符），短指令不做摘要
-              if (!summary || (summary.length < 10 && text.length >= 10)) {
-                summary = text.replace(/\n/g, ' ').slice(0, 60);
+              if (!summary || (summary.length < 10 && cleanText.length >= 10)) {
+                summary = cleanText.replace(/\n/g, ' ').slice(0, 60);
               }
             }
           } catch {} // skip unparseable lines
@@ -318,20 +321,23 @@ app.post('/api/session-preview', (req, res) => {
         const j = JSON.parse(line);
         if (j.type === 'user' && j.message?.content?.[0]?.text) {
           const text = j.message.content[0].text;
-          // 跳过 IDE 事件和 skill 系统消息
-          if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+          // 跳过 IDE 事件
+          if (/^<[a-z_]+>/.test(text)) continue;
+          // skill 消息：剥离 "Base directory for this skill: ..." 前缀
+          const cleanText = text.startsWith('Base directory for this skill:')
+            ? text.replace(/^Base directory for this skill:[^\n]*\n\n/, '') : text;
           userCount++;
-          // 第一条"实质"消息：跳过短指令（< 10 字符，如 "B+C" "OK" "对"），取第一条真问题
+          // 第一条"实质"消息：跳过短指令（< 10 字符），取第一条真问题
           if (!foundSubstantial) {
-            if (text.length >= 10) {
-              firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+            if (cleanText.length >= 10) {
+              firstMsg = cleanText.replace(/\n/g, ' ').slice(0, 200);
               foundSubstantial = true;
             } else if (!firstMsg) {
-              firstMsg = text.replace(/\n/g, ' ').slice(0, 100);
+              firstMsg = cleanText.replace(/\n/g, ' ').slice(0, 100);
             }
           }
           if (currentUser) rounds.push({ user: currentUser, assistant: '' });
-          currentUser = text;
+          currentUser = cleanText;
         }
         if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
           assistantCount++;
