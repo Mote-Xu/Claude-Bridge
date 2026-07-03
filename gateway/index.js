@@ -2,38 +2,47 @@ const express = require('express');
 const config = require('./config');
 const { init, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, listSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck } = require('./ssh');
+const { execClaude, healthCheck, getProjects } = require('./ssh');
 
 wecom.init(config);
 init(config.dbPath);
 
-// 快捷发送回复
 async function reply(chatId, userId, text) {
   await wecom.sendMessage(chatId, userId, text.slice(0, 4000));
+}
+
+// 自动发现本地所有 Claude Code 项目
+let projectsCache = null;
+let projectsCacheTime = 0;
+
+async function discoverProjects() {
+  if (projectsCache && Date.now() - projectsCacheTime < 60000) return projectsCache;
+  try {
+    projectsCache = await getProjects();
+    projectsCacheTime = Date.now();
+  } catch { /* use cache */ }
+  return projectsCache || {};
 }
 
 async function handleMessage(chatId, userId, text) {
   const group = getGroup(chatId);
   const trimmed = text.trim();
 
-  // 群还没绑定项目
   if (!group) {
-    const projectName = Object.keys(config.projects).find(
-      p => p.toLowerCase() === trimmed.toLowerCase()
+    const projects = await discoverProjects();
+    const match = Object.entries(projects).find(
+      ([name]) => name.toLowerCase() === trimmed.toLowerCase()
     );
-    if (projectName) {
-      addGroup(chatId, projectName, config.projects[projectName]);
-      await reply(chatId, userId, `🟢 已接入项目：${projectName}`);
+    if (match) {
+      addGroup(chatId, match[0], match[1]);
+      await reply(chatId, userId, `🟢 已接入项目：${match[0]}\n用 @会话名 <消息> 开始对话`);
       return;
     }
-    await reply(chatId, userId,
-      '👋 请告诉我项目名：\n' +
-      Object.keys(config.projects).map(p => `  · ${p}`).join('\n')
-    );
+    const names = Object.keys(projects).map(p => `  · ${p}`).join('\n') || '  (未发现 Claude 项目)';
+    await reply(chatId, userId, '👋 请告诉我项目名：\n' + names);
     return;
   }
 
-  // 解析 @会话名
   const atMatch = trimmed.match(/^@(\S+)\s*(.*)/);
 
   if (!atMatch) {
@@ -41,10 +50,10 @@ async function handleMessage(chatId, userId, text) {
     if (active.length === 1) {
       await handleSessionMessage(chatId, userId, active[0], trimmed, group);
     } else if (active.length === 0) {
-      await reply(chatId, userId, '没有活跃会话。用 @会话名 <消息> 开始对话');
+      await reply(chatId, userId, '用 @会话名 <消息> 开始对话');
     } else {
       const names = active.map(s => `@${s.session_name}`).join('、');
-      await reply(chatId, userId, `有多个会话：${names}\n用 @会话名 指定发给谁`);
+      await reply(chatId, userId, `有多个会话：${names}\n用 @会话名 指定`);
     }
     return;
   }
@@ -52,13 +61,11 @@ async function handleMessage(chatId, userId, text) {
   const sessionName = atMatch[1];
   const message = atMatch[2];
 
-  if (!message || message === 'stop' || message === '中断') {
+  if (message === 'stop' || message === '中断') {
     const s = getSessionByName(chatId, sessionName);
-    if (s && message === 'stop') {
+    if (s) {
       updateSessionStatus(s.id, 'idle');
       await reply(chatId, userId, `⏹ 已中断 @${sessionName}`);
-    } else if (!s && !message) {
-      await reply(chatId, userId, `找不到 @${sessionName}。请附上消息`);
     }
     return;
   }
@@ -75,8 +82,8 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     return;
   }
 
-  const isNew = !existingSession;
   const name = sessionName || existingSession?.session_name;
+  const isNew = !existingSession;
   const claudeSessionId = existingSession?.claude_session_id || null;
 
   auditLog(chatId, existingSession?.id || null, 'in', message);

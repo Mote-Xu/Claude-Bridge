@@ -76,4 +76,34 @@ function healthCheck() {
   });
 }
 
-module.exports = { execClaude, healthCheck };
+// 自动发现 Claude Code 项目（读 %APPDATA%\claude\projects\）
+async function getProjects() {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const { host, username, privateKey } = config.local;
+
+    conn.on('ready', () => {
+      // 一条 PowerShell 命令：读所有 project JSON，输出 name|path
+      const cmd = 'powershell -Command "Get-ChildItem \'C:\\Users\\Mote\\AppData\\Roaming\\claude\\projects\\*.json\' | ForEach-Object { $j = Get-Content $_.FullName | ConvertFrom-Json; $name = ($j.cwd -replace \'.*\\\\\\\\\', \'\' -replace \'.*/\', \'\'); Write-Output \\\"$name|$($j.cwd)\\\" }"';
+      conn.exec(cmd, (err, stream) => {
+        if (err) { conn.end(); return resolve({}); }
+        let data = '';
+        stream.on('data', (d) => data += d.toString());
+        stream.on('close', () => {
+          conn.end();
+          const projects = {};
+          data.trim().split(/\r?\n/).filter(Boolean).forEach(line => {
+            const [name, ...pathParts] = line.split('|');
+            const cwd = pathParts.join('|'); // 路径可能有 | 字符
+            if (name && cwd) projects[name.trim()] = cwd.trim();
+          });
+          resolve(projects);
+        });
+      });
+    });
+    conn.on('error', () => resolve({}));
+    conn.connect({ host, port: 22, username, privateKey: fs.readFileSync(privateKey), readyTimeout: 10000 });
+  });
+}
+
+module.exports = { execClaude, healthCheck, getProjects };
