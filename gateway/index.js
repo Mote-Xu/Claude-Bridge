@@ -219,30 +219,7 @@ async function handleMessage(chatId, userId, text) {
 
   if (!group) {
     const projects = await discoverProjects();
-    const projList = Object.entries(projects);
-    // 纯数字 → 按序号选项目（在项目列表之后使用）
-    if (/^\d+$/.test(trimmed)) {
-      const idx = parseInt(trimmed) - 1;
-      if (idx >= 0 && idx < projList.length) {
-        const [name, cwd] = projList[idx];
-        addGroup(chatId, name, cwd);
-        const history = filterHidden(await listSessions(cwd));
-        let msg = `🟢 已接入项目：${name}`;
-        if (history.length > 0) {
-          msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
-          history.slice(0, 8).forEach((s, i) => {
-            const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
-            msg += `\n  ${i + 1}. ${label}`;
-          });
-          msg += '\n\n或 @会话名 <消息> 新建会话';
-        }
-        await reply(chatId, userId, msg);
-      } else {
-        await reply(chatId, userId, `❌ 序号 ${trimmed} 超出范围`);
-      }
-      return;
-    }
-    const match = projList.find(
+    const match = Object.entries(projects).find(
       ([name]) => name.toLowerCase() === trimmed.toLowerCase()
     );
     if (match) {
