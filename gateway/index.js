@@ -2,7 +2,7 @@ const express = require('express');
 const config = require('./config');
 const { init, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, listSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck, getProjects } = require('./ssh');
+const { execClaude, healthCheck, getProjects, findLatestSession } = require('./ssh');
 
 wecom.init(config);
 init(config.dbPath);
@@ -106,9 +106,10 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const s = existingSession || getSessionByName(chatId, name);
     if (s) {
       touchSession(s.id);
-      if (isNew && result.stdout) {
-        const match = result.stdout.match(/session[_\s]?id[:\s]+(\S+)/i);
-        if (match) updateClaudeSessionId(s.id, match[1]);
+      if (isNew) {
+        // 第一条消息后自动发现 Claude session ID
+        const sid = await findLatestSession(group.project_path);
+        if (sid) updateClaudeSessionId(s.id, sid);
       }
     }
   } catch (err) {
