@@ -352,7 +352,6 @@ app.post('/api/session-preview', (req, res) => {
     let userCount = 0, assistantCount = 0;
     const allUserMsgs = []; // 所有有效用户消息
     const rounds = [];
-    let currentUser = null;
 
     for (const line of lines) {
       try {
@@ -367,21 +366,21 @@ app.post('/api/session-preview', (req, res) => {
           }
           userCount++;
           if (displayText.length >= 10) allUserMsgs.push(displayText);
-          if (currentUser) rounds.push({ user: currentUser, assistant: '' });
-          currentUser = displayText;
+          rounds.push({ user: displayText, assistant: '' }); // 用户消息立即建轮次
         }
-        if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
+        if (j.type === 'assistant' && j.message?.content?.[0]?.text) {
           assistantCount++;
           const text = j.message.content[0].text;
-          if (rounds.length > 0) {
-            rounds[rounds.length - 1].assistant = text; // 始终覆盖，最后一条 text 才是真回复
+          // 填入最后一个未配对的轮次
+          for (let i = rounds.length - 1; i >= 0; i--) {
+            if (!rounds[i].assistant) { rounds[i].assistant = text; break; }
           }
         }
       } catch {}
     }
-    // 最后一条未完成的 user 消息（没有 assistant 回复）
-    if (currentUser && rounds.length === 0) {
-      rounds.push({ user: currentUser, assistant: '' });
+    // 去掉最后一轮如果即没 assistant 也是空 user 的（不太可能但防御）
+    if (rounds.length > 0 && !rounds[rounds.length - 1].assistant && !rounds[rounds.length - 1].user) {
+      rounds.pop();
     }
 
     // 取最近 3 轮
