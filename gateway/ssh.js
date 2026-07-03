@@ -5,7 +5,7 @@ const config = require('./config');
 function sshExec(cmd, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
-    const { host, username, privateKey } = config.local;
+    const { host, username, privateKey } = config.ssh || config.local;
     let stdout = '', stderr = '';
     const timer = setTimeout(() => { conn.end(); reject(new Error('SSH timeout')); }, timeout);
     conn.on('ready', () => {
@@ -22,16 +22,35 @@ function sshExec(cmd, timeout = 30000) {
 }
 
 // 执行 Claude Code
+// sessionId: 续接已有会话（null = 新建）
+// message: 用户消息
+// options.cwd: 项目工作目录（新建会话时设置初始目录）
 async function execClaude(sessionId, message, options = {}) {
   const claudeBin = 'C:\\Users\\Mote\\AppData\\Roaming\\npm\\claude.cmd';
   const msgFile = 'C:\\Users\\Mote\\AppData\\Local\\Temp\\clawd-msg.txt';
+
+  // Step 1: 通过 PowerShell Base64 写入消息文件（避开所有转义）
   const msgB64 = Buffer.from(message, 'utf-8').toString('base64');
   const writeScript = `$f='${msgFile}'; [System.IO.File]::WriteAllBytes($f,[System.Convert]::FromBase64String('${msgB64}')); $ProgressPreference='SilentlyContinue'`;
   const writeEnc = Buffer.from(writeScript, 'utf16le').toString('base64');
   await sshExec(`powershell -NoProfile -NonInteractive -EncodedCommand ${writeEnc}`, 10000);
 
+  // Step 2: 续接会话时先杀掉桌面端残留 Claude 进程，防止 session lock 冲突
+  // 手机发消息 = 人不在电脑前，安全杀掉桌面端 Claude
+  if (sessionId) {
+    try {
+      await sshExec(
+        `powershell -NoProfile -Command "Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Claude*' } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"`,
+        5000
+      );
+    } catch {} // 杀进程失败不阻塞
+  }
+
+  // Step 3: pipe 消息到 Claude Code
+  // CI=true 可能让 Claude CLI 以非交互模式创建会话，VS Code 更可能识别
   const resumeFlag = sessionId ? ` --resume "${sessionId}"` : '';
-  const runCmd = `cmd /c "type ${msgFile} | ${claudeBin}${resumeFlag}"`;
+  const cdFlag = options.cwd && !sessionId ? `cd /d "${options.cwd}" && ` : '';
+  const runCmd = `cmd /c "${cdFlag}set CI=true && set CLAUDE_NO_TUI=1 && type ${msgFile} | ${claudeBin}${resumeFlag}"`;
   return sshExec(runCmd, 180000);
 }
 
@@ -39,25 +58,48 @@ async function healthCheck() {
   try { await sshExec('echo ok', 5000); return true; } catch { return false; }
 }
 
-// 自动发现所有项目（一条 PowerShell -EncodedCommand）
+// 自动发现所有项目（PowerShell -EncodedCommand，彻底避免 cmd.exe 转义地狱）
 async function getProjects() {
   try {
-    // 用 Buffer 构造命令字节，彻底避免 JS 转义问题
-    const cmdParts = [
-      'for /d %d in (', '"', 'C:\\Users\\Mote\\.claude\\projects\\*', '"', ') do @findstr /c:',
-      '"', '\\"', 'cwd', '\\"', '"', ' ', '"', '%d\\*.jsonl', '"', ' 2>nul'
-    ];
-    const cmdStr = cmdParts.join('');
-    const grepAll = await sshExec(cmdStr, 15000);
+    // PowerShell 脚本：遍历 projects 目录 → 读每个项目首个 jsonl 前 20 行 → 正则提取 cwd
+    // 全程只用单引号 + Base64 编码，Node.js 侧无任何转义
+    const psScript = `[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$baseDir = 'C:\\Users\\Mote\\.claude\\projects'
+if (Test-Path $baseDir) {
+    Get-ChildItem $baseDir -Directory | ForEach-Object {
+        $jsonls = @(Get-ChildItem $_.FullName -Filter *.jsonl -ErrorAction SilentlyContinue)
+        $found = $false
+        foreach ($jsonl in $jsonls) {
+            if (-not $found) {
+                $lines = Get-Content $jsonl.FullName -TotalCount 20 -ErrorAction SilentlyContinue
+                foreach ($line in $lines) {
+                    if (-not $found -and ($line -match '"cwd"\\s*:\\s*"([^"]+)"')) {
+                        $cwd = $Matches[1] -replace '\\\\+', '\\'
+                        $name = Split-Path $cwd -Leaf
+                        Write-Output ('PROJECT_MAP:' + $name + '===>' + $cwd)
+                        $found = $true
+                    }
+                }
+            }
+        }
+    }
+}`;
+    const psEnc = Buffer.from(psScript, 'utf16le').toString('base64');
+    const res = await sshExec(`powershell -NoProfile -NonInteractive -EncodedCommand ${psEnc}`, 15000);
+
     const projects = {};
-    grepAll.stdout.trim().split(/\r?\n/).filter(Boolean).forEach(line => {
-      const m = line.match(/"cwd"\s*:\s*"([^"]+)"/);
-      if (m) {
-        const cwd = m[1].replace(/\\\\/g, '\\');
-        const name = cwd.split('\\').filter(Boolean).pop();
-        if (name && !projects[name]) projects[name] = cwd;
+    res.stdout.trim().split(/\r?\n/).filter(Boolean).forEach(line => {
+      if (line.startsWith('PROJECT_MAP:')) {
+        const kv = line.slice('PROJECT_MAP:'.length);
+        const sep = kv.indexOf('===>');
+        if (sep > 0) {
+          const name = kv.slice(0, sep).trim();
+          const cwd = kv.slice(sep + 4).trim();
+          if (name && cwd && !projects[name]) projects[name] = cwd;
+        }
       }
     });
+
     if (Object.keys(projects).length === 0) return config.projects || {};
     return projects;
   } catch {

@@ -54,6 +54,20 @@ module.exports = {
     burstIntervalMs: 500,
   },
 
+  // Windows Agent（本地 HTTP 服务，替代 SSH）
+  agent: {
+    host: '100.80.205.79',       // Windows Tailscale IP
+    port: 9877,                   // Agent 监听端口
+    timeout: 10000,               // 普通请求超时（run-claude 除外）
+  },
+
+  // SSH fallback（Agent 不可用时使用）
+  ssh: {
+    host: '100.80.205.79',       // Windows Tailscale IP
+    username: 'Mote',            // Windows 用户名
+    privateKey: '/home/mote/.ssh/id_rsa',
+  },
+
   // 数据库
   dbPath: '/mnt/data/clawd/clawd.db',
 };

@@ -18,7 +18,7 @@ async function createSession(sessionId, projectPath, claudeSessionId, onOutput) 
     return; // already exists
   }
 
-  const { host, username, privateKey } = config.local;
+  const { host, username, privateKey } = config.ssh || config.local;
   const claudeBin = 'C:\\Users\\Mote\\AppData\\Roaming\\npm\\claude.cmd';
   const resumeFlag = claudeSessionId ? ` --resume "${claudeSessionId}"` : '';
 

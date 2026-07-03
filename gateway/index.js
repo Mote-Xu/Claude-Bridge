@@ -2,7 +2,8 @@ const express = require('express');
 const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./ssh');
+// Agent HTTP 优先，SSH 自动 fallback
+const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./agent');
 
 wecom.init(config);
 dbInit(config.dbPath);
@@ -25,10 +26,48 @@ async function discoverProjects() {
   return Object.keys(projectsCache || {}).length > 0 ? projectsCache : (config.projects || {});
 }
 
+// 剥离群聊 @Bot 前缀（群聊消息格式：@BotName 实际内容）
+function stripBotMention(text) {
+  return text.replace(/^@\S+\s*/, '').trim();
+}
+
 async function handleMessage(chatId, userId, text) {
   const group = getGroup(chatId);
-  const trimmed = text.trim();
+  // 剥离 @Bot 前缀（群聊会有，私聊没有也不影响）
+  const trimmed = stripBotMention(text);
 
+  // 帮助
+  if (trimmed === '/help' || trimmed === '帮助') {
+    await reply(chatId, userId,
+      '🤖 Clawd 命令：\n' +
+      '  切换 <项目名> — 换一个项目\n' +
+      '  退出 / /leave — 退出当前项目\n' +
+      '  @会话名 <消息> — 发给指定会话\n' +
+      '  @会话名 stop — 中断会话\n' +
+      '  @会话名 done — 结束会话\n' +
+      '  序号 — 续接历史会话\n' +
+      '  直接发消息 — 发给当前活跃会话'
+    );
+    return;
+  }
+
+  // 切换项目
+  if (trimmed.startsWith('切换 ') || trimmed.startsWith('/switch ')) {
+    const target = trimmed.split(/\s+/)[1];
+    const projects = await discoverProjects();
+    const match = Object.entries(projects).find(
+      ([name]) => name.toLowerCase() === target.toLowerCase()
+    );
+    if (match) {
+      addGroup(chatId, match[0], match[1]);
+      await reply(chatId, userId, `🔄 已切换到项目：${match[0]}`);
+    } else {
+      await reply(chatId, userId, `❌ 未找到项目 "${target}"`);
+    }
+    return;
+  }
+
+  // 退出
   if (trimmed === '退出' || trimmed === '/leave') {
     if (group) {
       removeGroup(chatId);
@@ -170,6 +209,19 @@ app.post('/webhook', async (req, res) => {
   try {
     const parsed = await wecom.decryptMessage(req.body, req.query.msg_signature, req.query.timestamp, req.query.nonce);
     const msg = parsed.xml;
+
+    // 事件消息：Bot 被拉入群聊
+    if (msg.MsgType === 'event') {
+      if (msg.Event === 'add_to_chat' || msg.Event === 'enter_chat') {
+        const chatId = msg.ChatId || msg.FromUserName;
+        const projects = await discoverProjects();
+        const names = Object.keys(projects).map(p => `  · ${p}`).join('\n') || '  (未发现电脑上的 Claude 项目)';
+        wecom.sendMessage(chatId, '', '👋 Clawd 已就绪！\n请告诉我要接入的项目名：\n' + names)
+          .catch(err => console.error('Welcome error:', err));
+      }
+      return res.send('success');
+    }
+
     if (msg.MsgType === 'text') {
       const userId = msg.FromUserName || msg.From?.UserId || '';
       handleMessage(msg.ChatId || userId, userId, msg.Text?.Content || msg.Content)
