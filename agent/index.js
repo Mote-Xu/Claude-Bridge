@@ -231,19 +231,22 @@ app.post('/api/list-sessions', (req, res) => {
     const sessions = [];
     for (const f of files) {
       const stat = fs.statSync(path.join(dir, f));
-      const sortTime = stat.birthtimeMs || stat.ctimeMs;
-      // 提取摘要：优先 aiTitle（Claude 自动生成），否则找第一条实质用户消息
+      // 提取摘要 + 最后活跃时间
       let summary = '';
       let aiTitle = '';
       let hasUserMessage = false;
+      let lastActivity = stat.mtimeMs; // 默认用 mtime，之后用 JSONL 里最后时间戳覆盖
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
         const allLines = content.split('\n');
-        // 扫描全部行取最后的 aiTitle（标题随对话更新，越后面越新）
         for (const line of allLines) {
           try {
             const j = JSON.parse(line);
-            if (j.aiTitle) aiTitle = j.aiTitle; // 不 break，取最后一个
+            if (j.aiTitle) aiTitle = j.aiTitle;
+            if (j.timestamp) {
+              const ts = new Date(j.timestamp).getTime();
+              if (!isNaN(ts)) lastActivity = ts;
+            }
           } catch {}
         }
         const lines = allLines.slice(0, 50);
@@ -276,7 +279,7 @@ app.post('/api/list-sessions', (req, res) => {
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary: aiTitle || summary,
-        sortTime: stat.mtimeMs, // 按最近修改时间排序
+        sortTime: lastActivity, // 按最后一条消息时间排序，不受文件 mtime 影响
       });
     }
     // 从 session index 读取标题
