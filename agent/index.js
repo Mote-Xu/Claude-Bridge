@@ -50,14 +50,15 @@ app.post('/api/discover', (req, res) => {
 
       let latestMtime = 0;
       for (const file of jsonls) {
-        // 读 JSONL 最后 500 字节取真实最后活跃时间（mtime 会被 VS Code 碰）
+        // 读 JSONL 最后 4KB 取真实最后活跃时间（mtime 会被 VS Code 碰）
         try {
           const fd = fs.openSync(path.join(PROJECTS_DIR, dir.name, file), 'r');
-          const buf = Buffer.alloc(500);
+          const buf = Buffer.alloc(4096);
           const stat = fs.fstatSync(fd);
           if (stat.size > 0) {
-            fs.readSync(fd, buf, 0, 500, Math.max(0, stat.size - 500));
-            const tail = buf.toString('utf-8');
+            const start = Math.max(0, stat.size - 4096);
+            const bytesRead = fs.readSync(fd, buf, 0, 4096, start);
+            const tail = buf.toString('utf-8', 0, bytesRead);
             const m = [...tail.matchAll(/"timestamp":"([^"]+)"/g)];
             if (m.length > 0) {
               const ts = new Date(m[m.length - 1][1]).getTime();
