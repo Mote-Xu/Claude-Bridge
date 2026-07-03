@@ -192,3 +192,32 @@ async function listSessions(projectPath) {
 3. **架构评估**：目前的 Node.js Gateway + SSH + Claude Code pipe 方案有没有架构级的问题？要不要换成别的？
 
 4. **PTY vs Pipe**：我测试了 `claude` 的 PTY 交互模式（`conn.exec(cmd, {pty: true})`），但 Claude Code v2.1.197 会弹出主题选择 TUI，`stream.write()` 的消息到不了聊天输入框。有没有办法跳过主题选择或用其他方式进入纯文本交互模式？如果 PTY 可行，就能实现真正的"手机=第二屏幕"体验。
+
+5. **❓ 重新评估 OpenClaw**：这个项目最初考虑过用 OpenClaw，但被外部 AI 否掉了。否掉理由如下：
+
+   > **当时的外部 AI 判断（第一轮咨询）：**
+   >
+   > *Gemini：*
+   > "OpenClaw 是一个完备的 Agent 框架，而你其实只需要一个带有 SSH 通信能力的 Telegram Bot 管道。
+   > 极简替代方案：直接用 Node.js 或 Python 写一个 100 行左右的 Bot 脚本。
+   > OpenClaw 的 Skill 机制更适合'输入-等待-单次返回'的同步模式，处理复杂的 CLI 交互会很别扭。"
+   >
+   > *GPT：*
+   > "OpenClaw 同时在'当 agent'和'当 router'，会导致决策逻辑不清晰、调试困难。
+   > 去掉 OpenClaw。Claude Code 保持'唯一智能决策层'。OpenClaw 不要'思考'，只做 message broker、task queue、audit log。
+   > 过早引入 agent orchestration 层。其实你还没到需要它的阶段。"
+
+   **现在发生了什么（第二轮实践后）：**
+   - 亲手写了 ~500 行 Node.js Gateway，踩了所有坑
+   - SSH 多层转义地狱（JS → ssh2 → SSH server → cmd.exe → PowerShell → 正则），每一层都吃反斜杠和引号
+   - `claude` 没有 `--no-tui` / `--chat` 等非交互 flag；PTY 模式 TUI 无法被 `stream.write()` 操控
+   - 中文编码必须走 Base64 → PowerShell WriteAllBytes → cmd type pipe 三步，不能直接 `echo | claude`
+   - 项目发现必须在本地读文件，远程 SSH grep JSONL 是不可靠的
+   - 两台外部 AI（最新一轮）一致建议："Windows 本地 agent"——本质上是重新发明一个简化版 OpenClaw
+   - OpenClaw 自带 WeCom 渠道、消息路由、本地文件访问、Windows agent 能力——恰好填补我们所有自建短板
+
+   **核心问题：当初否掉 OpenClaw 的判断，在经历过这些实战验证后，还成立吗？**
+
+   - OpenClaw 的 WeCom 渠道 + 本地 agent 模式，能否替代我们现在这套 SSH + pipe 的脆弱链路？
+   - OpenClaw 接 Claude Code 作为后端模型（而非用 DeepSeek 取代它），能否保留"Claude Code 是唯一 AI 决策层"的原则？
+   - 如果现在用 OpenClaw 重建，最小改动方案是什么？还是说自建 agent 更合适？
