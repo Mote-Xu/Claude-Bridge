@@ -154,7 +154,7 @@ async function handleMessage(chatId, userId, text) {
       const startIdx = active.length;
       msg += '\n\n💻 电脑历史会话：';
       history.slice(0, 6).forEach((s, i) => {
-        const label = s.date || s.id.slice(0, 8);
+        const label = s.summary || s.date || s.id.slice(0, 8);
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }

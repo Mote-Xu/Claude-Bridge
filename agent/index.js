@@ -168,10 +168,25 @@ app.post('/api/list-sessions', (req, res) => {
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
     const sessions = files.map(f => {
       const stat = fs.statSync(path.join(dir, f));
+      // 提取摘要：读前 50 行，找第一条用户消息
+      let summary = '';
+      try {
+        const content = fs.readFileSync(path.join(dir, f), 'utf-8');
+        const lines = content.split('\n').slice(0, 50);
+        for (const line of lines) {
+          try {
+            const json = JSON.parse(line);
+            if (json.type === 'user' && json.message?.content?.[0]?.text) {
+              summary = json.message.content[0].text.replace(/\n/g, ' ').slice(0, 60);
+              break;
+            }
+          } catch {} // skip unparseable lines
+        }
+      } catch {} // 读文件失败不阻塞
       return {
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
-        summary: ''
+        summary,
       };
     }).sort((a, b) => b.date.localeCompare(a.date));
 
