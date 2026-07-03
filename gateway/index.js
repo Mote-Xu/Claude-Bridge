@@ -79,11 +79,12 @@ async function handleMessage(chatId, userId, text) {
       msg += `📅 ${detail.date} | 👤 ${detail.userCount}条消息 | 🤖 ${detail.assistantCount}条回复\n`;
       msg += `📏 ${(detail.size / 1024).toFixed(0)}KB | 共${detail.totalLines}行\n`;
       msg += `\n💬 第一条消息：\n${detail.firstMessage || '(无)'}`;
-      if (detail.recentMessages && detail.recentMessages.length > 0) {
-        msg += `\n\n📝 最近 ${detail.recentMessages.length} 条：`;
-        for (const m of detail.recentMessages) {
-          const icon = m.role === 'user' ? '👤' : '🤖';
-          msg += `\n  ${icon} ${m.text}`;
+      if (detail.recentRounds && detail.recentRounds.length > 0) {
+        msg += `\n\n📝 最近 ${detail.recentRounds.length} 轮对话：`;
+        for (const r of detail.recentRounds) {
+          msg += `\n  👤 ${r.user}`;
+          if (r.assistant) msg += `\n  🤖 ${r.assistant}`;
+          msg += '\n  ---';
         }
       }
       msg += `\n\n回复 ${num} 接入此会话`;

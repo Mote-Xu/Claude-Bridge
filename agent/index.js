@@ -306,25 +306,42 @@ app.post('/api/session-preview', (req, res) => {
     const lines = content.split('\n').filter(Boolean);
 
     let firstMsg = '', userCount = 0, assistantCount = 0;
-    const recentMessages = [];
+    const rounds = []; // 完整的对话轮次 [{user, assistant}]
+    let currentUser = null;
 
     for (const line of lines) {
       try {
         const j = JSON.parse(line);
         if (j.type === 'user' && j.message?.content?.[0]?.text) {
           const text = j.message.content[0].text;
-          if (!/^<[a-z_]+>/.test(text) && !text.startsWith('Base directory for')) {
-            userCount++;
-            if (!firstMsg) firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
-            recentMessages.push({ role: 'user', text: text.slice(0, 80) });
-          }
+          // 跳过 IDE 事件、skill 系统消息、过短消息（< 15 字符）
+          if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+          if (text.length < 15) continue;
+          userCount++;
+          if (!firstMsg) firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+          if (currentUser) rounds.push({ user: currentUser, assistant: '' });
+          currentUser = text;
         }
-        if (j.type === 'assistant' && j.message?.content?.[0]?.text) {
+        if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
           assistantCount++;
-          recentMessages.push({ role: 'assistant', text: j.message.content[0].text.slice(0, 80) });
+          const text = j.message.content[0].text;
+          // 找最近的空位填入
+          if (rounds.length > 0 && !rounds[rounds.length - 1].assistant) {
+            rounds[rounds.length - 1].assistant = text;
+          }
         }
       } catch {}
     }
+    // 最后一条未完成的 user 消息（没有 assistant 回复）
+    if (currentUser && rounds.length === 0) {
+      rounds.push({ user: currentUser, assistant: '' });
+    }
+
+    // 取最近 3 轮
+    const recentRounds = rounds.slice(-3).map(r => ({
+      user: r.user.slice(0, 100),
+      assistant: r.assistant ? r.assistant.slice(0, 100) : '(未回复)',
+    }));
 
     res.json({
       sessionId,
@@ -334,7 +351,7 @@ app.post('/api/session-preview', (req, res) => {
       assistantCount,
       totalLines: lines.length,
       firstMessage: firstMsg,
-      recentMessages: recentMessages.slice(-5), // 最近 5 条
+      recentRounds,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
