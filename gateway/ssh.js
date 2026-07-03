@@ -55,7 +55,7 @@ exit 0`;
   // Step 3: pipe 消息到 Claude Code
   // CI=true 可能让 Claude CLI 以非交互模式创建会话，VS Code 更可能识别
   const resumeFlag = sessionId ? ` --resume "${sessionId}"` : '';
-  const cdFlag = options.cwd && !sessionId ? `cd /d "${options.cwd}" && ` : '';
+  const cdFlag = options.cwd ? `cd /d "${options.cwd}" && ` : '';
   const runCmd = `cmd /c "${cdFlag}set CI=true && set CLAUDE_NO_TUI=1 && type ${msgFile} | ${claudeBin}${resumeFlag}"`;
   return sshExec(runCmd, 180000);
 }

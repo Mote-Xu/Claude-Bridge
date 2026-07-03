@@ -40,6 +40,8 @@ async function handleMessage(chatId, userId, text) {
   if (trimmed === '/help' || trimmed === '帮助') {
     await reply(chatId, userId,
       '🤖 Clawd 命令：\n' +
+      '  列表 / /list — 查看当前项目所有会话\n' +
+      '  序号(1,2,3…) — 切换会话\n' +
       '  切换 <项目名> — 换一个项目\n' +
       '  退出 / /leave — 退出当前项目\n' +
       '  @会话名 <消息> — 发给指定会话\n' +
@@ -48,6 +50,31 @@ async function handleMessage(chatId, userId, text) {
       '  序号 — 续接历史会话\n' +
       '  直接发消息 — 发给当前活跃会话'
     );
+    return;
+  }
+
+  // 查看会话列表
+  if (trimmed === '列表' || trimmed === '/list') {
+    const active = getActiveSessions(chatId);
+    const rawHistory = await listSessions(group.project_path);
+    const history = active.filter(s => s.claude_session_id)
+      ? rawHistory.filter(h => !active.some(a => a.claude_session_id === h.id))
+      : rawHistory;
+    let msg = `📋 项目：${group.project_name}`;
+    if (active.length > 0) {
+      msg += '\n\n🟢 活跃中：';
+      active.forEach((s, i) => { msg += `\n  ${i + 1}. @${s.session_name} (${s.message_count}轮)`; });
+    }
+    if (history.length > 0) {
+      const startIdx = active.length;
+      msg += '\n\n💻 历史会话：';
+      history.slice(0, 10).forEach((s, i) => {
+        const label = s.summary || s.date || s.id.slice(0, 8);
+        msg += `\n  ${startIdx + i + 1}. ${label}`;
+      });
+    }
+    msg += '\n\n回复序号切换会话，或直接发消息';
+    await reply(chatId, userId, msg);
     return;
   }
 
@@ -111,16 +138,18 @@ async function handleMessage(chatId, userId, text) {
     // 纯数字 → 选择会话（不发消息给 Claude）
     if (/^\d+$/.test(trimmed)) {
       const active = getActiveSessions(chatId);
-      const history = await listSessions(group.project_path);
+      const rawHistory = await listSessions(group.project_path);
+      // 去掉已激活的历史会话，避免同一会话占两个序号
+      const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
+      const history = rawHistory.filter(h => !activeClaudeIds.has(h.id));
       const num = parseInt(trimmed);
 
       // 清理所有旧活跃会话，确保选中后唯一定向
       for (const s of active) updateSessionStatus(s.id, 'ended');
 
-      // 匹配活跃会话（现在 active 是上面查的，还没被清理）
+      // 匹配活跃会话
       if (num >= 1 && num <= active.length) {
         const s = active[num - 1];
-        // 恢复该会话的活跃状态
         updateSessionStatus(s.id, 'active');
         await reply(chatId, userId, `📋 @${s.session_name} (${s.message_count}轮)\n发消息继续对话`);
         return;
