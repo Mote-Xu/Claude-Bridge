@@ -50,22 +50,10 @@ app.post('/api/discover', (req, res) => {
 
       let latestMtime = 0;
       for (const file of jsonls) {
-        // 读 JSONL 最后 4KB 取真实最后活跃时间（mtime 会被 VS Code 碰）
+        // 取文件修改时间——即使 VS Code 碰过，最近活跃的项目 mtime 也最靠前
         try {
-          const fd = fs.openSync(path.join(PROJECTS_DIR, dir.name, file), 'r');
-          const buf = Buffer.alloc(4096);
-          const stat = fs.fstatSync(fd);
-          if (stat.size > 0) {
-            const start = Math.max(0, stat.size - 4096);
-            const bytesRead = fs.readSync(fd, buf, 0, 4096, start);
-            const tail = buf.toString('utf-8', 0, bytesRead);
-            const m = [...tail.matchAll(/"timestamp":"([^"]+)"/g)];
-            if (m.length > 0) {
-              const ts = new Date(m[m.length - 1][1]).getTime();
-              if (!isNaN(ts)) latestMtime = Math.max(latestMtime, ts);
-            }
-          }
-          fs.closeSync(fd);
+          const stat = fs.statSync(path.join(PROJECTS_DIR, dir.name, file));
+          if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
         } catch {}
         if (found) continue;
         try {
@@ -85,15 +73,6 @@ app.post('/api/discover', (req, res) => {
       }
       if (found) {
         const pname = Object.entries(projects).pop()[0];
-        // JSONL 解析失败时用 birthtime 兜底
-        if (!latestMtime) {
-          for (const file of jsonls) {
-            try {
-              const stat = fs.statSync(path.join(PROJECTS_DIR, dir.name, file));
-              latestMtime = Math.max(latestMtime, stat.birthtimeMs || stat.mtimeMs);
-            } catch {}
-          }
-        }
         projectTimes[pname] = latestMtime;
       }
     }
