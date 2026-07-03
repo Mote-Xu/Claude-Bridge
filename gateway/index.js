@@ -75,10 +75,14 @@ async function handleMessage(chatId, userId, text) {
     // 调 Agent 取详情
     try {
       const detail = await agentCall('POST', '/api/session-preview', { projectPath: group.project_path, sessionId: targetId }, 10000);
-      let msg = `📋 会话预览 #${num}\n`;
-      msg += `📅 ${detail.date} | 👤 ${detail.userCount}条消息 | 🤖 ${detail.assistantCount}条回复\n`;
-      msg += `📏 ${(detail.size / 1024).toFixed(0)}KB | 共${detail.totalLines}行\n`;
-      msg += `\n💬 第一条消息：\n${detail.firstMessage || '(无)'}`;
+      let msg = `📋 会话预览 #${num}`;
+      if (detail.sessionName) msg += ` — ${detail.sessionName}`;
+      msg += `\n📅 ${detail.date} | 👤 ${detail.userCount}条消息 | 🤖 ${detail.assistantCount}条回复`;
+      msg += `\n📏 ${(detail.size / 1024).toFixed(0)}KB | 共${detail.totalLines}行`;
+      if (detail.topicMsgs && detail.topicMsgs.length > 0) {
+        msg += `\n\n💬 话题：`;
+        for (const t of detail.topicMsgs) msg += `\n  · ${t.slice(0, 120)}`;
+      }
       if (detail.recentRounds && detail.recentRounds.length > 0) {
         msg += `\n\n📝 最近 ${detail.recentRounds.length} 轮对话：`;
         for (const r of detail.recentRounds) {

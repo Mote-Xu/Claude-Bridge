@@ -315,38 +315,24 @@ app.post('/api/session-preview', (req, res) => {
     const content = fs.readFileSync(file, 'utf-8');
     const lines = content.split('\n').filter(Boolean);
 
-    let firstMsg = '', userCount = 0, assistantCount = 0;
-    const rounds = []; // 完整的对话轮次 [{user, assistant}]
+    let userCount = 0, assistantCount = 0;
+    const allUserMsgs = []; // 所有有效用户消息
+    const rounds = [];
     let currentUser = null;
-    let foundSubstantial = false;
 
     for (const line of lines) {
       try {
         const j = JSON.parse(line);
         if (j.type === 'user' && j.message?.content?.[0]?.text) {
           const text = j.message.content[0].text;
-          // 跳过 IDE 事件
-          if (/^<[a-z_]+>/.test(text)) continue;
-          // skill 调用：从 ARGUMENTS 提取用户真正输入的内容
+          if (/^<[a-z_]+>/.test(text)) continue; // IDE 事件
           let displayText = text;
           if (text.startsWith('Base directory for')) {
-            const argsMatch = text.match(/\nARGUMENTS:\s*(.+)$/);
-            if (argsMatch) {
-              displayText = argsMatch[1]; // 用户实际输入的参数
-            } else {
-              continue; // 没有参数就跳过整条
-            }
+            const m = text.match(/\nARGUMENTS:\s*(.+)$/);
+            if (m) displayText = m[1]; else continue;
           }
           userCount++;
-          // 第一条"实质"消息：跳过短指令（< 10 字符），取第一条真问题
-          if (!foundSubstantial) {
-            if (displayText.length >= 10) {
-              firstMsg = displayText.replace(/\n/g, ' ').slice(0, 200);
-              foundSubstantial = true;
-            } else if (!firstMsg && displayText.length >= 1) {
-              firstMsg = displayText.replace(/\n/g, ' ').slice(0, 100);
-            }
-          }
+          if (displayText.length >= 10) allUserMsgs.push(displayText);
           if (currentUser) rounds.push({ user: currentUser, assistant: '' });
           currentUser = displayText;
         }
@@ -370,14 +356,30 @@ app.post('/api/session-preview', (req, res) => {
       assistant: r.assistant ? r.assistant.slice(0, 100) : '(未回复)',
     }));
 
+    // 尝试从 session index 读取标题
+    let sessionName = '';
+    try {
+      const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
+      if (fs.existsSync(sessionsDir)) {
+        for (const f of fs.readdirSync(sessionsDir)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const e = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
+            if (e.sessionId === sessionId) { sessionName = e.name || ''; break; }
+          } catch {}
+        }
+      }
+    } catch {}
+
     res.json({
       sessionId,
+      sessionName,
       date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
       size: stat.size,
       userCount,
       assistantCount,
       totalLines: lines.length,
-      firstMessage: firstMsg,
+      topicMsgs: allUserMsgs.slice(0, 3),
       recentRounds,
     });
   } catch (err) {
