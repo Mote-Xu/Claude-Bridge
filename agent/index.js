@@ -309,7 +309,7 @@ app.post('/api/list-sessions', (req, res) => {
     for (const s of sessions) {
       if (sessionNames[s.id]) s.name = sessionNames[s.id];
     }
-    sessions.sort((a, b) => b.sortTime > a.sortTime ? -1 : 1);
+    sessions.sort((a, b) => b.sortTime - a.sortTime); // 降序：新的在前
 
     res.json({ sessions });
   } catch (err) {
