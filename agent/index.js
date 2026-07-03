@@ -234,14 +234,15 @@ app.post('/api/list-sessions', (req, res) => {
       let hasUserMessage = false;
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
-        const lines = content.split('\n').slice(0, 50);
-        // 先扫一遍找 aiTitle
-        for (const line of lines) {
+        const allLines = content.split('\n');
+        // 扫描全部行取最后的 aiTitle（标题随对话更新，越后面越新）
+        for (const line of allLines) {
           try {
             const j = JSON.parse(line);
-            if (j.aiTitle) { aiTitle = j.aiTitle; break; }
+            if (j.aiTitle) aiTitle = j.aiTitle; // 不 break，取最后一个
           } catch {}
         }
+        const lines = allLines.slice(0, 50);
         for (const line of lines) {
           try {
             const json = JSON.parse(line);
