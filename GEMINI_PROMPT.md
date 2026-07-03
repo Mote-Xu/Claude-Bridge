@@ -10,7 +10,7 @@
 
 ---
 
-## 当前架构（v1.5）
+## 当前架构（v1.5 — 2026-07-04 凌晨验证完毕）
 
 ```
 企业微信 App → Bot API (webhook)
@@ -20,7 +20,7 @@
       → claude --resume <id>
 ```
 
-- Gateway：消息路由、会话管理、任务队列、企业微信加解密
+- Gateway：消息路由、会话管理、任务队列、企业微信加解密、定时 drain
 - Agent：本地读写 Claude 的 session store、本地 pipe 执行 `claude.cmd`
 - Claude Code：唯一 AI 决策层，Gateway 和 Agent 都不做推理
 
@@ -51,6 +51,8 @@
 群内 @会话名 <消息>      → 指定发给哪个会话
 群内 @会话名 stop/done   → 中断/结束会话
 群内 3                   → 续接历史会话 #3
+群内 列表               → 查看所有会话
+群内 预览 2              → 预览 #2 的话题和最近几轮
 另拉一个群               → 另一个项目，独立上下文
 ```
 
@@ -68,40 +70,68 @@ gateway/          ← mote-home 上运行
   config.js       ← 配置（agent 地址、SSH 参数、项目列表）
 
 agent/            ← Windows 本地运行
-  index.js        ← Express :9877，4 个 API
+  index.js        ← Express :9877，5 个 API
   start.bat       ← 开机自启
 ```
 
 ---
 
-## Windows Agent 的 4 个 API
+## Windows Agent 的 5 个 API
 
 | 接口 | 功能 |
 |------|------|
 | `GET /api/health` | 在线检测 |
-| `POST /api/discover` | 扫描 `.claude\projects\`，读 JSONL 取 cwd，返回 `{name: path}` |
-| `POST /api/list-sessions` | 接收 `{projectPath}`，列 JSONL 文件，返回 `[{id, date}]` |
-| `POST /api/run-claude` | 接收 `{sessionId, message, cwd}`，base64 写文件 + pipe 调 `claude.cmd`，返回 stdout |
-
-Agent 已验证通过（4 个 API 全通）。
+| `POST /api/discover` | 扫描 `.claude\projects\`，读 JSONL 取 cwd，按最近修改时间排序 |
+| `POST /api/list-sessions` | 接收 `{projectPath}`，读 JSONL 文件，返回 `[{id, date, summary}]` |
+| `POST /api/run-claude` | 接收 `{sessionId, message, cwd}`，本地 pipe 调 `claude.cmd`，返回 stdout |
+| `POST /api/session-preview` | 接收 `{projectPath, sessionId}`，返回话题消息、最近几轮、统计 |
 
 ---
 
-## 已验证 vs 未验证
+## 已验证 ✅
 
-### Agent 已验证（curl 测试）
+### Agent API
 - ✅ /api/health — `{"status":"ok"}`
-- ✅ /api/discover — 返回 27 个项目
-- ✅ /api/list-sessions — 返回会话列表
-- ⚠️ /api/run-claude — Agent 正常，但 PowerShell Invoke-RestMethod 发中文 JSON 有编码问题（非 Agent bug，实际 WeCom 消息不会走 PS）
+- ✅ /api/discover — 返回 26 个项目，按最近活跃排序
+- ✅ /api/list-sessions — 返回会话列表，含 aiTitle 作为摘要
+- ✅ /api/run-claude — 本地 pipe 执行，中文正常（Gateway JSON 调用无编码问题）
+- ✅ /api/session-preview — 话题消息 + 最近几轮 + 统计
 
-### 未验证（部署后才能测）
-- 🔲 mote-home Gateway 通过 Tailscale 访问 Agent
-- 🔲 企业微信端到端（Gateway → Agent → Claude → WeCom）
-- 🔲 群聊模型（Bot 被拉入群 → 自动欢迎 → 绑定项目）
-- 🔲 SSH fallback（Agent 不可用时自动切换）
-- 🔲 `CI=true` 环境变量能否让 pipe 会话在 VS Code 可见
-- 🔲 Windows 防火墙未开放 → 当前 SSH fallback 是唯一通路
+### 部署 & 连通
+- ✅ mote-home Gateway 通过 Tailscale 访问 Agent（`curl http://100.80.205.79:9877/api/health`）
+- ✅ 企业微信端到端（Gateway → Agent → Claude → WeCom 全链路 30 秒内完成）
+- ✅ Windows 防火墙放行（`setup-firewall.bat` 以管理员运行）
+- ✅ Agent 开机自启（`start.bat` 快捷方式放 `shell:startup`）
+
+### 关键修复
+- ✅ `--resume` 需要 `cd /d` 到项目目录才能找到会话（根因：Claude Code 用 cwd 定位 session store）
+- ✅ 会话标题：优先读 Claude Code 的 `aiTitle` 字段（如「Claude Bridge 远程架构重构」），VS Code 显示的也是这个
+- ✅ 排序：项目列表按最近活跃、会话列表按最近修改（mtime）
+- ✅ Session lock 防护：续接前 `Get-CimInstance` 查命令行杀残留 Claude 进程
+- ✅ 会话去重：活跃会话不再出现在历史列表里，避免序号串位
+- ✅ 选号后自动路由：清理旧活跃会话，下条消息唯一定向
+- ✅ 空会话过滤：VS Code 自动创建的无用户消息会话不显示
+- ✅ 定时 drain：每 30 秒检测电脑在线状态，自动重试 pending 任务
+- ✅ `CI=true` + `CLAUDE_NO_TUI=1` 环境变量已设（对 pipe 模式 VS Code 可见性效果有限）
+
+### 命令清单
+- ✅ `/help` / `帮助` — 列出可用命令
+- ✅ `切换 <项目名>` — 换项目
+- ✅ `退出` / `/leave` — 退出当前项目
+- ✅ `列表` / `/list` — 查看当前项目会话（含标题）
+- ✅ `预览 <序号>` — 预览会话话题和最近几轮
+- ✅ `<序号>` — 选会话
+- ✅ `<消息>` — 自动路由到唯一活跃会话
+- ✅ `@会话名 <消息>` — 发给指定会话
+
+---
+
+## 待改进
+
+- 🔲 群聊多项目并行测试（拉多个群同时用）
+- 🔲 流式输出（Claude 结果逐步推送到微信，不等 3 分钟一次性返回）
+- 🔲 Agent 鉴权（`X-Auth-Token`，Tailscale 隔离下暂时可接受）
+- 🔲 VS Code 会话可见性（pipe 模式天生限制，电脑先创建、手机续接可规避）
 
 ---
 
