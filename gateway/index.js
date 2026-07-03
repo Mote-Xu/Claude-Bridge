@@ -108,6 +108,35 @@ async function handleMessage(chatId, userId, text) {
   const atMatch = trimmed.match(/^@(\S+)\s*(.*)/);
 
   if (!atMatch) {
+    // 纯数字 → 选择会话（不发消息给 Claude）
+    if (/^\d+$/.test(trimmed)) {
+      const active = getActiveSessions(chatId);
+      const history = await listSessions(group.project_path);
+      const num = parseInt(trimmed);
+
+      // 匹配活跃会话
+      if (num >= 1 && num <= active.length) {
+        const s = active[num - 1];
+        await reply(chatId, userId, `📋 @${s.session_name} (${s.message_count}轮)\n发消息继续对话`);
+        return;
+      }
+
+      // 匹配历史会话
+      const histIdx = num - active.length - 1;
+      if (histIdx >= 0 && histIdx < history.length) {
+        const h = history[histIdx];
+        const label = h.date || h.id.slice(0, 8);
+        createSession(chatId, label, '');
+        const s = getSessionByName(chatId, label);
+        if (s) updateClaudeSessionId(s.id, h.id);
+        await reply(chatId, userId, `📋 ${label}\n已接入，发消息继续对话`);
+        return;
+      }
+
+      await reply(chatId, userId, `❌ 序号 ${trimmed} 超出范围`);
+      return;
+    }
+
     const active = getActiveSessions(chatId);
     // 只有唯一活跃会话 → 直接路由
     if (active.length === 1) {
