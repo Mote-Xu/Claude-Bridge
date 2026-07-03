@@ -19,12 +19,11 @@ async function execClaude(sessionId, message, options = {}) {
       // Windows: 用 echo + pipe 把消息喂给 claude --resume
       // claude --resume <id> 进入交互模式，从 stdin 读取
       const claudeBin = 'C:\\Users\\Mote\\AppData\\Roaming\\npm\\claude.cmd';
+      // Base64 编码避免特殊字符问题
+      const msgB64 = Buffer.from(message, 'utf-8').toString('base64');
       const cmd = [
-        cwd && cwd.length > 2 ? `${cwd.slice(0,2)}` : '',
         cwd ? `cd /d "${cwd}"` : '',
-        sessionId
-          ? `echo ${escaped}| "${claudeBin}" --resume "${sessionId}"`
-          : `echo ${escaped}| "${claudeBin}"`,
+        `powershell -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${msgB64}')) | & '${claudeBin}'${sessionId ? ' --resume ' + sessionId : ''}"`,
       ].filter(Boolean).join(' && ');
 
       conn.exec(cmd, { pty: false }, (err, stream) => {
@@ -83,9 +82,20 @@ async function getProjects() {
     const { host, username, privateKey } = config.local;
 
     conn.on('ready', () => {
-      // 一条 PowerShell 命令：读所有 project JSON，输出 name|path
-      const cmd = 'powershell -Command "Get-ChildItem \'C:\\Users\\Mote\\AppData\\Roaming\\claude\\projects\\*.json\' | ForEach-Object { $j = Get-Content $_.FullName | ConvertFrom-Json; $name = ($j.cwd -replace \'.*\\\\\\\\\', \'\' -replace \'.*/\', \'\'); Write-Output \\\"$name|$($j.cwd)\\\" }"';
-      conn.exec(cmd, (err, stream) => {
+      // PowerShell: 输出每行一个项目，格式为 cwd|dirname
+      const psCmd = 'powershell -Command "' +
+        '$d=dir C:\\Users\\Mote\\.claude\\projects -Directory; ' +
+        'foreach($p in $d){' +
+          '$f=dir \\\"$($p.FullName)\\*.jsonl\\\" -EA 0|select -First 1; ' +
+          'if($f){' +
+            '$l=gc $f.FullName -First 20|%{if($_ -match \\\"cwd\\\"){$_}}|select -First 1; ' +
+            'if($l -and $l -match \\\"\\\\u0022cwd\\\\u0022:\\\\u0022([^\\\\u0022]+)\\\\"\\\"){' +
+              '$c=$matches[1] -replace \\\"\\\\\\\\\\\\\\\\\\\",\\\"\\\\\\\";' +
+              'Write-Output \\\"$c`t$($p.Name)\\\"' +
+            '}' +
+          '}' +
+        }"';
+      conn.exec(psCmd, (err, stream) => {
         if (err) { conn.end(); return resolve({}); }
         let data = '';
         stream.on('data', (d) => data += d.toString());
@@ -93,9 +103,11 @@ async function getProjects() {
           conn.end();
           const projects = {};
           data.trim().split(/\r?\n/).filter(Boolean).forEach(line => {
-            const [name, ...pathParts] = line.split('|');
-            const cwd = pathParts.join('|'); // 路径可能有 | 字符
-            if (name && cwd) projects[name.trim()] = cwd.trim();
+            const [cwd, ...rest] = line.split('\t');
+             if (cwd) {
+              const name = cwd.split('\\').filter(Boolean).pop() || rest[0] || '';
+              if (name) projects[name] = cwd;
+            }
           });
           resolve(projects);
         });
