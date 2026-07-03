@@ -31,12 +31,14 @@ function stripBotMention(text) {
   return text.replace(/^@\S+\s*/, '').trim();
 }
 
+// 项目列表序号有效期（毫秒）
+const PROJECT_LIST_WINDOW = 60000;
+const projectListTimers = new Map(); // chatId → timestamp
+
 async function handleMessage(chatId, userId, text) {
   const group = getGroup(chatId);
-  // 剥离 @Bot 前缀（群聊会有，私聊没有也不影响）
   const trimmed = stripBotMention(text);
 
-  // 辅助：从历史列表中去掉隐藏的会话
   function filterHidden(history) {
     const hiddenIds = new Set(getHiddenSessionIds(chatId));
     return history.filter(h => !hiddenIds.has(h.id));
@@ -213,13 +215,39 @@ async function handleMessage(chatId, userId, text) {
   if (trimmed === '项目列表' || trimmed === '/projects') {
     const projects = await discoverProjects();
     const names = Object.keys(projects).map((p, i) => `  ${i + 1}. ${p}`).join('\n') || '  (未发现 Claude 项目)';
-    await reply(chatId, userId, '📁 可用项目（回复序号接入）：\n' + names);
+    projectListTimers.set(chatId, Date.now()); // 激活序号选择窗口
+    await reply(chatId, userId, '📁 可用项目（60秒内回复序号接入）：\n' + names);
     return;
   }
 
   if (!group) {
     const projects = await discoverProjects();
-    const match = Object.entries(projects).find(
+    const projList = Object.entries(projects);
+    // 项目列表显示后 60 秒内数字可选项目
+    const listShown = projectListTimers.get(chatId) || 0;
+    if (/^\d+$/.test(trimmed) && (Date.now() - listShown < PROJECT_LIST_WINDOW)) {
+      projectListTimers.delete(chatId);
+      const idx = parseInt(trimmed) - 1;
+      if (idx >= 0 && idx < projList.length) {
+        const [name, cwd] = projList[idx];
+        addGroup(chatId, name, cwd);
+        const history = filterHidden(await listSessions(cwd));
+        let msg = `🟢 已接入项目：${name}`;
+        if (history.length > 0) {
+          msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
+          history.slice(0, 8).forEach((s, i) => {
+            const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
+            msg += `\n  ${i + 1}. ${label}`;
+          });
+          msg += '\n\n或 @会话名 <消息> 新建会话';
+        }
+        await reply(chatId, userId, msg);
+      } else {
+        await reply(chatId, userId, `❌ 序号 ${trimmed} 超出范围`);
+      }
+      return;
+    }
+    const match = projList.find(
       ([name]) => name.toLowerCase() === trimmed.toLowerCase()
     );
     if (match) {
