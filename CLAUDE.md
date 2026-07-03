@@ -116,7 +116,7 @@ gateway/
   db.js         — SQLite 数据层（群绑定/会话/任务队列/审计）
   wecom.js      — 企业微信加解密 + 消息发送
   config.js     — 配置文件
-  session.js    — PTY 会话管理（实验性，未使用）
+
 
 agent/
   index.js      — Windows Agent Express 服务
