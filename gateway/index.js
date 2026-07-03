@@ -115,7 +115,7 @@ async function handleMessage(chatId, userId, text) {
       const startIdx = active.length;
       msg += '\n\n💻 历史会话：';
       history.slice(0, 10).forEach((s, i) => {
-        const label = s.summary || s.date || s.id.slice(0, 8);
+        const label = s.summary || s.name || s.date || s.id.slice(0, 8);
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }
@@ -205,7 +205,7 @@ async function handleMessage(chatId, userId, text) {
       const histIdx = num - active.length - 1;
       if (histIdx >= 0 && histIdx < history.length) {
         const h = history[histIdx];
-        const label = (h.summary || h.date || h.id.slice(0, 8)).slice(0, 25);
+        const label = (h.summary || h.name || h.date || h.id.slice(0, 8)).slice(0, 25);
         createSession(chatId, label, '');
         const s = getSessionByName(chatId, label);
         if (s) updateClaudeSessionId(s.id, h.id);
@@ -234,7 +234,7 @@ async function handleMessage(chatId, userId, text) {
       const startIdx = active.length;
       msg += '\n\n💻 电脑历史会话：';
       history.slice(0, 6).forEach((s, i) => {
-        const label = s.summary || s.date || s.id.slice(0, 8);
+        const label = s.summary || s.name || s.date || s.id.slice(0, 8);
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }

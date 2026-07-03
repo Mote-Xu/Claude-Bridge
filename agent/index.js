@@ -228,12 +228,20 @@ app.post('/api/list-sessions', (req, res) => {
     for (const f of files) {
       const stat = fs.statSync(path.join(dir, f));
       const sortTime = stat.birthtimeMs || stat.ctimeMs;
-      // 提取摘要：读前 50 行，找第一条用户消息
+      // 提取摘要：优先 aiTitle（Claude 自动生成），否则找第一条实质用户消息
       let summary = '';
+      let aiTitle = '';
       let hasUserMessage = false;
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
         const lines = content.split('\n').slice(0, 50);
+        // 先扫一遍找 aiTitle
+        for (const line of lines) {
+          try {
+            const j = JSON.parse(line);
+            if (j.aiTitle) { aiTitle = j.aiTitle; break; }
+          } catch {}
+        }
         for (const line of lines) {
           try {
             const json = JSON.parse(line);
@@ -262,9 +270,27 @@ app.post('/api/list-sessions', (req, res) => {
       sessions.push({
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
-        summary,
+        summary: aiTitle || summary,
         sortTime,
       });
+    }
+    // 从 session index 读取标题
+    let sessionNames = {};
+    try {
+      const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
+      if (fs.existsSync(sessionsDir)) {
+        for (const f of fs.readdirSync(sessionsDir)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const e = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
+            if (e.sessionId && e.name) sessionNames[e.sessionId] = e.name;
+          } catch {}
+        }
+      }
+    } catch {}
+
+    for (const s of sessions) {
+      if (sessionNames[s.id]) s.name = sessionNames[s.id];
     }
     sessions.sort((a, b) => b.sortTime > a.sortTime ? -1 : 1);
 
