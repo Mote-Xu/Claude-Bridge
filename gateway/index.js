@@ -106,6 +106,22 @@ async function handleMessage(chatId, userId, text) {
     return;
   }
 
+  // 查看已隐藏的会话
+  if (trimmed === '隐藏列表' || trimmed === '/hidden') {
+    const hiddenIds = getHiddenSessionIds(chatId);
+    if (hiddenIds.length === 0) {
+      await reply(chatId, userId, '没有隐藏的会话');
+    } else {
+      let msg = `🙈 已隐藏 ${hiddenIds.length} 个会话：`;
+      for (const id of hiddenIds) {
+        msg += `\n  · ${id.slice(0, 12)}...`;
+      }
+      msg += '\n\n发「取消隐藏 <序号>」恢复';
+      await reply(chatId, userId, msg);
+    }
+    return;
+  }
+
   // 隐藏/取消隐藏 会话
   const hideMatch = trimmed.match(/^(?:隐藏|hide)\s+(\d+)$/i);
   const unhideMatch = trimmed.match(/^(?:取消隐藏|unhide)\s+(\d+)$/i);
@@ -195,7 +211,30 @@ async function handleMessage(chatId, userId, text) {
 
   if (!group) {
     const projects = await discoverProjects();
-    const match = Object.entries(projects).find(
+    const projList = Object.entries(projects);
+    // 纯数字 → 按序号选项目
+    if (/^\d+$/.test(trimmed)) {
+      const idx = parseInt(trimmed) - 1;
+      if (idx >= 0 && idx < projList.length) {
+        const [name, cwd] = projList[idx];
+        addGroup(chatId, name, cwd);
+        const history = filterHidden(await listSessions(cwd));
+        let msg = `🟢 已接入项目：${name}`;
+        if (history.length > 0) {
+          msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
+          history.slice(0, 8).forEach((s, i) => {
+            const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
+            msg += `\n  ${i + 1}. ${label}`;
+          });
+          msg += '\n\n或 @会话名 <消息> 新建会话';
+        }
+        await reply(chatId, userId, msg);
+      } else {
+        await reply(chatId, userId, `❌ 序号 ${trimmed} 超出范围`);
+      }
+      return;
+    }
+    const match = projList.find(
       ([name]) => name.toLowerCase() === trimmed.toLowerCase()
     );
     if (match) {
@@ -215,8 +254,8 @@ async function handleMessage(chatId, userId, text) {
       await reply(chatId, userId, msg);
       return;
     }
-    const names = Object.keys(projects).map(p => `  · ${p}`).join('\n') || '  (未发现 Claude 项目)';
-    await reply(chatId, userId, '👋 请告诉我项目名：\n' + names);
+    const names = Object.keys(projects).map((p, i) => `  ${i+1}. ${p}`).join('\n') || '  (未发现 Claude 项目)';
+    await reply(chatId, userId, '👋 回复序号或项目名：\n' + names);
     return;
   }
 
