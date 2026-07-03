@@ -291,6 +291,56 @@ app.post('/api/find-latest-session', (req, res) => {
   }
 });
 
+// POST /api/session-preview — 预览会话详情
+app.post('/api/session-preview', (req, res) => {
+  const { projectPath, sessionId } = req.body;
+  if (!projectPath || !sessionId) return res.status(400).json({ error: 'projectPath + sessionId required' });
+
+  try {
+    const encoded = encodeProject(projectPath);
+    const file = path.join(PROJECTS_DIR, encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'session not found' });
+
+    const stat = fs.statSync(file);
+    const content = fs.readFileSync(file, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+
+    let firstMsg = '', userCount = 0, assistantCount = 0;
+    const recentMessages = [];
+
+    for (const line of lines) {
+      try {
+        const j = JSON.parse(line);
+        if (j.type === 'user' && j.message?.content?.[0]?.text) {
+          const text = j.message.content[0].text;
+          if (!/^<[a-z_]+>/.test(text) && !text.startsWith('Base directory for')) {
+            userCount++;
+            if (!firstMsg) firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+            recentMessages.push({ role: 'user', text: text.slice(0, 80) });
+          }
+        }
+        if (j.type === 'assistant' && j.message?.content?.[0]?.text) {
+          assistantCount++;
+          recentMessages.push({ role: 'assistant', text: j.message.content[0].text.slice(0, 80) });
+        }
+      } catch {}
+    }
+
+    res.json({
+      sessionId,
+      date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
+      size: stat.size,
+      userCount,
+      assistantCount,
+      totalLines: lines.length,
+      firstMessage: firstMsg,
+      recentMessages: recentMessages.slice(-5), // 最近 5 条
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== 启动 ==========
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Clawd Agent v1.0 — http://0.0.0.0:${PORT}`);

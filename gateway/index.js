@@ -3,7 +3,7 @@ const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, markTaskProcessed, auditLog } = require('./db');
 const wecom = require('./wecom');
 // Agent HTTP 优先，SSH 自动 fallback
-const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./agent');
+const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall } = require('./agent');
 
 wecom.init(config);
 dbInit(config.dbPath);
@@ -50,6 +50,47 @@ async function handleMessage(chatId, userId, text) {
       '  序号 — 续接历史会话\n' +
       '  直接发消息 — 发给当前活跃会话'
     );
+    return;
+  }
+
+  // 预览会话详情
+  const previewMatch = trimmed.match(/^(?:预览|preview)\s+(\d+)$/i);
+  if (previewMatch) {
+    const num = parseInt(previewMatch[1]);
+    const active = getActiveSessions(chatId);
+    const rawHistory = await listSessions(group.project_path);
+    const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
+    const history = rawHistory.filter(h => !activeClaudeIds.has(h.id));
+
+    // 确定要预览的会话 ID
+    let targetId = null;
+    if (num >= 1 && num <= active.length) {
+      targetId = active[num - 1].claude_session_id;
+    } else {
+      const histIdx = num - active.length - 1;
+      if (histIdx >= 0 && histIdx < history.length) targetId = history[histIdx].id;
+    }
+    if (!targetId) { await reply(chatId, userId, `❌ 序号 ${num} 超出范围`); return; }
+
+    // 调 Agent 取详情
+    try {
+      const detail = await agentCall('POST', '/api/session-preview', { projectPath: group.project_path, sessionId: targetId }, 10000);
+      let msg = `📋 会话预览 #${num}\n`;
+      msg += `📅 ${detail.date} | 👤 ${detail.userCount}条消息 | 🤖 ${detail.assistantCount}条回复\n`;
+      msg += `📏 ${(detail.size / 1024).toFixed(0)}KB | 共${detail.totalLines}行\n`;
+      msg += `\n💬 第一条消息：\n${detail.firstMessage || '(无)'}`;
+      if (detail.recentMessages && detail.recentMessages.length > 0) {
+        msg += `\n\n📝 最近 ${detail.recentMessages.length} 条：`;
+        for (const m of detail.recentMessages) {
+          const icon = m.role === 'user' ? '👤' : '🤖';
+          msg += `\n  ${icon} ${m.text}`;
+        }
+      }
+      msg += `\n\n回复 ${num} 接入此会话`;
+      await reply(chatId, userId, msg);
+    } catch {
+      await reply(chatId, userId, '❌ 获取会话详情失败');
+    }
     return;
   }
 

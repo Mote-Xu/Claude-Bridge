@@ -116,4 +116,4 @@ async function getSessionIds(projectPath) {
   }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds };
+module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall };
