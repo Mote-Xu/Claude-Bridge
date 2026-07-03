@@ -168,7 +168,9 @@ app.post('/api/list-sessions', (req, res) => {
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
     const sessions = files.map(f => {
       const stat = fs.statSync(path.join(dir, f));
-      // 提取摘要：读前 50 行，找第一条用户消息
+      // 用创建时间排序（mtime 会因 --resume 而变，导致顺序漂移）
+      const sortTime = stat.birthtimeMs || stat.ctimeMs;
+      // 提取摘要...
       let summary = '';
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
@@ -177,7 +179,10 @@ app.post('/api/list-sessions', (req, res) => {
           try {
             const json = JSON.parse(line);
             if (json.type === 'user' && json.message?.content?.[0]?.text) {
-              summary = json.message.content[0].text.replace(/\n/g, ' ').slice(0, 60);
+              const text = json.message.content[0].text;
+              // 跳过 IDE 事件消息（<ide_*, file opened, etc）
+              if (/^<[a-z_]+>/.test(text)) continue;
+              summary = text.replace(/\n/g, ' ').slice(0, 60);
               break;
             }
           } catch {} // skip unparseable lines
@@ -187,8 +192,9 @@ app.post('/api/list-sessions', (req, res) => {
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary,
+        sortTime,
       };
-    }).sort((a, b) => b.date.localeCompare(a.date));
+    }).sort((a, b) => b.sortTime > a.sortTime ? -1 : 1);
 
     res.json({ sessions });
   } catch (err) {
