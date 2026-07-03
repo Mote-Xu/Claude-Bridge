@@ -39,6 +39,7 @@ app.post('/api/discover', (req, res) => {
     const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
 
+    const projectTimes = {}; // name → latest mtime
     for (const dir of dirs) {
       let found = false;
       let jsonls;
@@ -47,8 +48,13 @@ app.post('/api/discover', (req, res) => {
           .filter(f => f.endsWith('.jsonl'));
       } catch { continue; }
 
+      let latestMtime = 0;
       for (const file of jsonls) {
-        if (found) break;
+        try {
+          const stat = fs.statSync(path.join(PROJECTS_DIR, dir.name, file));
+          if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
+        } catch {}
+        if (found) continue;
         try {
           const content = fs.readFileSync(path.join(PROJECTS_DIR, dir.name, file), 'utf-8');
           const lines = content.split('\n').slice(0, 30);
@@ -64,9 +70,19 @@ app.post('/api/discover', (req, res) => {
           }
         } catch { continue; }
       }
+      if (found) {
+        const pname = Object.entries(projects).pop()[0];
+        projectTimes[pname] = latestMtime;
+      }
     }
 
-    res.json({ projects });
+    // 按最近修改时间排序
+    const sorted = {};
+    for (const [name, cwd] of Object.entries(projects).sort((a, b) =>
+      (projectTimes[b[0]] || 0) - (projectTimes[a[0]] || 0)
+    )) { sorted[name] = cwd; }
+
+    res.json({ projects: sorted });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -272,7 +288,7 @@ app.post('/api/list-sessions', (req, res) => {
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary: aiTitle || summary,
-        sortTime,
+        sortTime: stat.mtimeMs, // 按最近修改时间排序
       });
     }
     // 从 session index 读取标题
