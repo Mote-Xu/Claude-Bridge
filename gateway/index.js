@@ -2,7 +2,6 @@ const express = require('express');
 const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
-// Agent HTTP 优先，SSH 自动 fallback
 const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall } = require('./agent');
 
 wecom.init(config);
