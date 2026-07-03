@@ -1,26 +1,20 @@
 const express = require('express');
 const config = require('./config');
-const { init, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, listSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
+const { init: dbInit, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
 const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./ssh');
 
 wecom.init(config);
-init(config.dbPath);
+dbInit(config.dbPath);
 
 async function reply(chatId, userId, text) {
   await wecom.sendMessage(chatId, userId, text.slice(0, 4000));
 }
 
-// 自动发现本地所有 Claude Code 项目
-let projectsCache = null;
-let projectsCacheTime = 0;
-
+let projectsCache = null, projectsCacheTime = 0;
 async function discoverProjects() {
   if (projectsCache && Date.now() - projectsCacheTime < 60000) return projectsCache;
-  try {
-    projectsCache = await getProjects();
-    projectsCacheTime = Date.now();
-  } catch { /* use cache */ }
+  try { projectsCache = await getProjects(); projectsCacheTime = Date.now(); } catch {}
   return projectsCache || {};
 }
 
@@ -64,7 +58,7 @@ async function handleMessage(chatId, userId, text) {
       await reply(chatId, userId, '用 @会话名 <消息> 开始对话');
     } else {
       const names = active.map(s => `@${s.session_name}`).join('、');
-      await reply(chatId, userId, `有多个会话：${names}\n用 @会话名 指定`);
+      await reply(chatId, userId, `多个会话：${names}\n用 @会话名 指定`);
     }
     return;
   }
@@ -72,12 +66,14 @@ async function handleMessage(chatId, userId, text) {
   const sessionName = atMatch[1];
   const message = atMatch[2];
 
-  if (message === 'stop' || message === '中断') {
+  if (message === 'stop') {
     const s = getSessionByName(chatId, sessionName);
-    if (s) {
-      updateSessionStatus(s.id, 'idle');
-      await reply(chatId, userId, `⏹ 已中断 @${sessionName}`);
-    }
+    if (s) { updateSessionStatus(s.id, 'idle'); await reply(chatId, userId, `⏹ 已中断 @${sessionName}`); }
+    return;
+  }
+  if (message === 'done') {
+    const s = getSessionByName(chatId, sessionName);
+    if (s) { updateSessionStatus(s.id, 'ended'); await reply(chatId, userId, `✅ 已结束 @${sessionName}`); }
     return;
   }
 
@@ -89,27 +85,29 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
   const online = await healthCheck();
   if (!online) {
     enqueueTask(chatId, existingSession?.id || null, message, userId);
-    await reply(chatId, userId, '💻 主力机离线。任务已排队，上线后恢复。');
+    await reply(chatId, userId, '💻 主力机离线。任务已排队。');
     return;
   }
 
-  const name = sessionName || existingSession?.session_name;
   const isNew = !existingSession;
-  const claudeSessionId = existingSession?.claude_session_id || null;
+  const name = sessionName || existingSession?.session_name;
 
   auditLog(chatId, existingSession?.id || null, 'in', message);
 
-  if (isNew) {
-    createSession(chatId, name, message.slice(0, 50));
+  // 处理历史会话序号
+  let claudeSid = existingSession?.claude_session_id || null;
+  if (isNew && /^\d+$/.test(message)) {
+    const history = await listSessions(group.project_path);
+    const idx = parseInt(message) - 1;
+    if (history[idx]) claudeSid = history[idx].id;
   }
+
+  if (isNew) createSession(chatId, name, message.slice(0, 50));
 
   await reply(chatId, userId, `Claude·${name}:\n⏳ 处理中...`);
 
   try {
-    const result = await execClaude(claudeSessionId, message, {
-      cwd: group.project_path,
-    });
-
+    const result = await execClaude(claudeSid, message, { cwd: group.project_path });
     const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
     await reply(chatId, userId, `Claude·${name}:\n${output}`);
     auditLog(chatId, existingSession?.id || null, 'out', output);
@@ -117,10 +115,11 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const s = existingSession || getSessionByName(chatId, name);
     if (s) {
       touchSession(s.id);
-      if (isNew) {
-        // 第一条消息后自动发现 Claude session ID
-        const sid = await findLatestSession(group.project_path);
-        if (sid) updateClaudeSessionId(s.id, sid);
+      if (isNew && result.newSessionId) {
+        updateClaudeSessionId(s.id, result.newSessionId);
+      } else if (!claudeSid && !isNew) {
+        const newSid = await findLatestSession(group.project_path);
+        if (newSid) updateClaudeSessionId(s.id, newSid);
       }
     }
   } catch (err) {
@@ -130,31 +129,22 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
 
 // Express
 const app = express();
-app.use(express.text({ type: 'text/xml' }));
-app.use(express.text({ type: 'application/xml' }));
-
+app.use(express.text({ type: 'text/xml' })); app.use(express.text({ type: 'application/xml' }));
 app.get('/webhook', (req, res) => {
-  try {
-    res.send(wecom.verifyUrl(req.query.timestamp, req.query.nonce, req.query.echostr, req.query.msg_signature));
-  } catch { res.status(403).send('Forbidden'); }
+  try { res.send(wecom.verifyUrl(req.query.timestamp, req.query.nonce, req.query.echostr, req.query.msg_signature)); }
+  catch { res.status(403).send('Forbidden'); }
 });
-
 app.post('/webhook', async (req, res) => {
   try {
     const parsed = await wecom.decryptMessage(req.body, req.query.msg_signature, req.query.timestamp, req.query.nonce);
     const msg = parsed.xml;
     if (msg.MsgType === 'text') {
       const userId = msg.FromUserName || msg.From?.UserId || '';
-      const chatId = msg.ChatId || userId;
-      handleMessage(chatId, userId, msg.Text?.Content || msg.Content)
+      handleMessage(msg.ChatId || userId, userId, msg.Text?.Content || msg.Content)
         .catch(err => console.error('Handle error:', err));
     }
   } catch (err) { console.error('Webhook error:', err.message); }
   res.send('success');
 });
-
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
-app.listen(config.port, '127.0.0.1', () => {
-  console.log(`clawd Gateway on 127.0.0.1:${config.port}`);
-});
+app.listen(config.port, '127.0.0.1', () => console.log(`clawd Gateway on 127.0.0.1:${config.port}`));
