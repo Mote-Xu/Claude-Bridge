@@ -39,8 +39,22 @@ async function handleMessage(chatId, userId, text) {
   const group = getGroup(chatId);
   const trimmed = stripBotMention(text);
 
-  function filterHidden(history) {
+  // VS Code 的隐藏列表（缓存 5 分钟）
+  let vscodeHiddenCache = null, vscodeHiddenCacheTime = 0;
+  async function getVscodeHiddenIds() {
+    if (vscodeHiddenCache && Date.now() - vscodeHiddenCacheTime < 300000) return vscodeHiddenCache;
+    try {
+      const res = await agentCall('GET', '/api/hidden-sessions', null, 10000);
+      vscodeHiddenCache = res.hiddenSessionIds || [];
+      vscodeHiddenCacheTime = Date.now();
+    } catch { vscodeHiddenCache = []; }
+    return vscodeHiddenCache;
+  }
+
+  async function filterHidden(history) {
     const hiddenIds = new Set(getHiddenSessionIds(chatId));
+    const vscodeIds = await getVscodeHiddenIds();
+    for (const id of vscodeIds) hiddenIds.add(id);
     return history.filter(h => !hiddenIds.has(h.id));
   }
 
