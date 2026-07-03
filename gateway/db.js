@@ -110,9 +110,15 @@ function auditLog(chatId, sessionId, direction, content) {
     .run(chatId, sessionId, direction, content);
 }
 
+// === Remove ===
+function removeGroup(chatId) {
+  db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId);
+  return db.prepare('DELETE FROM groups WHERE chat_id = ?').run(chatId);
+}
+
 module.exports = {
   init,
-  getGroup, addGroup,
+  getGroup, addGroup, removeGroup,
   getSessionByName, getActiveSessions, listSessions,
   createSession, updateClaudeSessionId, touchSession, updateSessionStatus,
   enqueueTask, getPendingTasks,

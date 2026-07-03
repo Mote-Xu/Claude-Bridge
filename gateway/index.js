@@ -1,6 +1,6 @@
 const express = require('express');
 const config = require('./config');
-const { init: dbInit, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
+const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
 const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./ssh');
 
@@ -14,13 +14,30 @@ async function reply(chatId, userId, text) {
 let projectsCache = null, projectsCacheTime = 0;
 async function discoverProjects() {
   if (projectsCache && Date.now() - projectsCacheTime < 60000) return projectsCache;
-  try { projectsCache = await getProjects(); projectsCacheTime = Date.now(); } catch {}
-  return projectsCache || {};
+  try {
+    projectsCache = await Promise.race([
+      getProjects(),
+      new Promise(r => setTimeout(() => r({}), 5000))
+    ]);
+    projectsCacheTime = Date.now();
+  } catch {}
+  // 如果自动发现失败，用 config 里的 projects 兜底
+  return Object.keys(projectsCache || {}).length > 0 ? projectsCache : (config.projects || {});
 }
 
 async function handleMessage(chatId, userId, text) {
   const group = getGroup(chatId);
   const trimmed = text.trim();
+
+  if (trimmed === '退出' || trimmed === '/leave') {
+    if (group) {
+      removeGroup(chatId);
+      await reply(chatId, userId, '👋 已退出项目。发送项目名重新接入');
+    } else {
+      await reply(chatId, userId, '当前未接入项目');
+    }
+    return;
+  }
 
   if (!group) {
     const projects = await discoverProjects();
@@ -32,9 +49,10 @@ async function handleMessage(chatId, userId, text) {
       const history = await listSessions(match[1]);
       let msg = `🟢 已接入项目：${match[0]}`;
       if (history.length > 0) {
-        msg += `\n\n电脑上的历史会话（回复序号续接）：`;
+        msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
         history.slice(0, 8).forEach((s, i) => {
-          msg += `\n  ${i + 1}. ${s.summary.slice(0, 40)}`;
+          const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
+          msg += `\n  ${i + 1}. ${label}`;
         });
         msg += '\n\n或 @会话名 <消息> 新建会话';
       } else {
@@ -52,14 +70,28 @@ async function handleMessage(chatId, userId, text) {
 
   if (!atMatch) {
     const active = getActiveSessions(chatId);
+    // 只有唯一活跃会话 → 直接路由
     if (active.length === 1) {
       await handleSessionMessage(chatId, userId, active[0], trimmed, group);
-    } else if (active.length === 0) {
-      await reply(chatId, userId, '用 @会话名 <消息> 开始对话');
-    } else {
-      const names = active.map(s => `@${s.session_name}`).join('、');
-      await reply(chatId, userId, `多个会话：${names}\n用 @会话名 指定`);
+      return;
     }
+    // 列出所有可选会话（活跃 + 历史）
+    let msg = '你想跟哪个会话聊？回复序号或 @会话名：';
+    if (active.length > 0) {
+      msg += '\n\n🟢 活跃中：';
+      active.forEach((s, i) => { msg += `\n  ${i + 1}. @${s.session_name} (${s.message_count}轮)`; });
+    }
+    const history = await listSessions(group.project_path);
+    if (history.length > 0) {
+      const startIdx = active.length;
+      msg += '\n\n💻 电脑历史会话：';
+      history.slice(0, 6).forEach((s, i) => {
+        const label = s.date || s.id.slice(0, 8);
+        msg += `\n  ${startIdx + i + 1}. ${label}`;
+      });
+    }
+    msg += '\n\n或直接说 @会话名 <消息>';
+    await reply(chatId, userId, msg);
     return;
   }
 

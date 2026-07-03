@@ -7,22 +7,13 @@ function sshExec(cmd, timeout = 30000) {
     const conn = new Client();
     const { host, username, privateKey } = config.local;
     let stdout = '', stderr = '';
-
-    const timer = setTimeout(() => {
-      conn.end();
-      reject(new Error('SSH timeout'));
-    }, timeout);
-
+    const timer = setTimeout(() => { conn.end(); reject(new Error('SSH timeout')); }, timeout);
     conn.on('ready', () => {
       conn.exec(cmd, { pty: false }, (err, stream) => {
         if (err) { clearTimeout(timer); conn.end(); return reject(err); }
         stream.on('data', (d) => stdout += d.toString());
         stream.stderr.on('data', (d) => stderr += d.toString());
-        stream.on('close', (code) => {
-          clearTimeout(timer);
-          conn.end();
-          resolve({ stdout, stderr, code });
-        });
+        stream.on('close', (code) => { clearTimeout(timer); conn.end(); resolve({ stdout, stderr, code }); });
       });
     });
     conn.on('error', (err) => { clearTimeout(timer); reject(err); });
@@ -30,122 +21,90 @@ function sshExec(cmd, timeout = 30000) {
   });
 }
 
-// 执行 Claude Code，返回 session ID + 输出
+// 执行 Claude Code
 async function execClaude(sessionId, message, options = {}) {
   const claudeBin = 'C:\\Users\\Mote\\AppData\\Roaming\\npm\\claude.cmd';
   const msgFile = 'C:\\Users\\Mote\\AppData\\Local\\Temp\\clawd-msg.txt';
   const msgB64 = Buffer.from(message, 'utf-8').toString('base64');
-
-  // Step 1: 写消息文件
   const writeScript = `$f='${msgFile}'; [System.IO.File]::WriteAllBytes($f,[System.Convert]::FromBase64String('${msgB64}')); $ProgressPreference='SilentlyContinue'`;
-  const writeEncoded = Buffer.from(writeScript, 'utf16le').toString('base64');
-  await sshExec(`powershell -NoProfile -NonInteractive -EncodedCommand ${writeEncoded}`, 10000);
+  const writeEnc = Buffer.from(writeScript, 'utf16le').toString('base64');
+  await sshExec(`powershell -NoProfile -NonInteractive -EncodedCommand ${writeEnc}`, 10000);
 
-  // 如果是新会话，记录创建前的文件列表
-  let beforeFiles = new Set();
-  if (!sessionId && options.cwd) {
-    const encoded = options.cwd[0].toLowerCase() + options.cwd.slice(1).replace(/[:\\_]/g, '-');
-    const before = await sshExec(`dir /b "C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl"`, 5000);
-    beforeFiles = new Set(before.stdout.trim().split(/\r?\n/).filter(Boolean));
-  }
-
-  // Step 2: type 文件 pipe 给 claude
   const resumeFlag = sessionId ? ` --resume "${sessionId}"` : '';
   const runCmd = `cmd /c "type ${msgFile} | ${claudeBin}${resumeFlag}"`;
-  const result = await sshExec(runCmd, 180000);
-
-  // 如果是新会话，找新增的文件作为 session ID
-  if (!sessionId && options.cwd && beforeFiles.size > 0) {
-    const encoded = options.cwd[0].toLowerCase() + options.cwd.slice(1).replace(/[:\\_]/g, '-');
-    const after = await sshExec(`dir /b "C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl"`, 5000);
-    const afterFiles = after.stdout.trim().split(/\r?\n/).filter(Boolean);
-    const newFile = afterFiles.find(f => !beforeFiles.has(f));
-    if (newFile) result.newSessionId = newFile.replace('.jsonl', '');
-  }
-
-  return result;
+  return sshExec(runCmd, 180000);
 }
 
-// 健康检查
 async function healthCheck() {
-  try { await sshExec('echo ok', 5000); return true; }
-  catch { return false; }
+  try { await sshExec('echo ok', 5000); return true; } catch { return false; }
 }
 
-// 自动发现 Claude Code 项目
+// 自动发现所有项目（一条 PowerShell -EncodedCommand）
 async function getProjects() {
   try {
-    const res = await sshExec('dir /b "C:\\Users\\Mote\\.claude\\projects"', 10000);
-    const dirs = res.stdout.trim().split(/\r?\n/).filter(Boolean);
-    if (dirs.length === 0) return {};
-
-    // 每条 dir 对应一个项目，读取第一个 JSONL 的 cwd
+    // 用 Buffer 构造命令字节，彻底避免 JS 转义问题
+    const cmdParts = [
+      'for /d %d in (', '"', 'C:\\Users\\Mote\\.claude\\projects\\*', '"', ') do @findstr /c:',
+      '"', '\\"', 'cwd', '\\"', '"', ' ', '"', '%d\\*.jsonl', '"', ' 2>nul'
+    ];
+    const cmdStr = cmdParts.join('');
+    const grepAll = await sshExec(cmdStr, 15000);
     const projects = {};
-    for (const dir of dirs) {
-      try {
-        const jsonlRes = await sshExec(
-          `powershell -Command "dir 'C:\\Users\\Mote\\.claude\\projects\\${dir}\\*.jsonl' -EA 0 | select -First 1 | %% { gc $_.FullName -First 20 | ? { $_ -match 'cwd' } | select -First 1 }"`,
-          10000
-        );
-        const m = jsonlRes.stdout.match(/"cwd"\s*:\s*"([^"]+)"/);
-        if (m) {
-          const cwd = m[1].replace(/\\\\/g, '\\');
-          const name = cwd.split('\\').filter(Boolean).pop() || dir;
-          if (name) projects[name] = cwd;
-        }
-      } catch { /* skip this dir */ }
-    }
+    grepAll.stdout.trim().split(/\r?\n/).filter(Boolean).forEach(line => {
+      const m = line.match(/"cwd"\s*:\s*"([^"]+)"/);
+      if (m) {
+        const cwd = m[1].replace(/\\\\/g, '\\');
+        const name = cwd.split('\\').filter(Boolean).pop();
+        if (name && !projects[name]) projects[name] = cwd;
+      }
+    });
+    if (Object.keys(projects).length === 0) return config.projects || {};
     return projects;
   } catch {
-    return {};
+    return config.projects || {};
   }
 }
 
-// 获取某个项目的所有 session ID
-async function getSessionIds(projectPath) {
-  try {
-    const encoded = projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
-    const res = await sshExec(
-      `dir /b "C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl"`,
-      5000
-    );
-    return new Set(res.stdout.trim().split(/\r?\n/).filter(Boolean).map(f => f.replace('.jsonl', '')));
-  } catch {
-    return new Set();
-  }
-}
-
-async function findLatestSession(projectPath) {
-  try {
-    const encoded = projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
-    // 用 PowerShell 确保路径处理正确
-    const res = await sshExec(
-      `powershell -NoProfile -Command "(Get-ChildItem 'C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl' -EA 0 | Sort-Object LastWriteTime -Desc)[0].BaseName"`,
-      10000
-    );
-    const id = res.stdout.trim();
-    return id || null;
-  } catch {
-    return null;
-  }
-}
-
-// 获取指定项目的所有 Claude 会话列表
+// 项目会话列表
 async function listSessions(projectPath) {
   try {
     const encoded = projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
-    const res = await sshExec(
-      `powershell -NoProfile -Command "Get-ChildItem 'C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl' -EA 0 | Sort-Object LastWriteTime -Desc | ForEach-Object { $l=Get-Content $_.FullName -First 50 | Select-String '\\\"text\\\"' | Select-Object -First 2; $last=$l[-1] -replace '.*\\\"text\\\"\\s*:\\s*\\\"','' -replace '\\\".*',''; $id=$_.BaseName; Write-Output \\\"$id|$last\\\" }"`,
-      10000
-    );
-    const sessions = res.stdout.trim().split(/\r?\n/).filter(Boolean).map(line => {
-      const [id, ...summary] = line.split('|');
-      return { id, summary: summary.join('|').slice(0, 60) || '(空)' };
+    const dir = `C:\\Users\\Mote\\.claude\\projects\\${encoded}`;
+    const res = await sshExec(`dir /o-d /tc "${dir}\\*.jsonl"`, 8000);
+    const sessions = [];
+    res.stdout.trim().split(/\r?\n/).filter(l => l.includes('.jsonl')).forEach(line => {
+      const parts = line.trim().split(/\s+/);
+      const fn = parts[parts.length - 1];
+      if (fn.endsWith('.jsonl')) {
+        sessions.push({ id: fn.replace('.jsonl', ''), date: `${parts[0]} ${parts[1] || ''}`, summary: '' });
+      }
     });
     return sessions;
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, findLatestSession, listSessions };
+// 找到项目目录对应的编码名
+function encodeProject(projectPath) {
+  return projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
+}
+
+// 执行前后比对找新 session ID
+async function findLatestSession(projectPath) {
+  try {
+    const encoded = encodeProject(projectPath);
+    const res = await sshExec(`dir /b /o-d "C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl"`, 5000);
+    const newest = res.stdout.trim().split(/\r?\n/)[0];
+    return newest ? newest.replace('.jsonl', '') : null;
+  } catch { return null; }
+}
+
+// 比对执行前后的文件列表找新 session
+async function getSessionIds(projectPath) {
+  try {
+    const encoded = encodeProject(projectPath);
+    const res = await sshExec(`dir /b "C:\\Users\\Mote\\.claude\\projects\\${encoded}\\*.jsonl"`, 5000);
+    return new Set(res.stdout.trim().split(/\r?\n/).filter(Boolean).map(f => f.replace('.jsonl', '')));
+  } catch { return new Set(); }
+}
+
+module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds };
