@@ -100,30 +100,9 @@ app.post('/api/run-claude', (req, res) => {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: 杀 Claude 进程 + 记录恢复信息
+    // Step 2: 杀所有 node 进程（Agent 自己除外），防止 session lock
+    // VS Code 会从 session index 自动恢复被杀的会话，无需额外机制
     if (sessionId) {
-      // 2a. 杀前记录当前活跃会话（回来后可恢复）
-      try {
-        const killedSessions = [];
-        const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
-        if (fs.existsSync(sessionsDir)) {
-          for (const f of fs.readdirSync(sessionsDir)) {
-            if (!f.endsWith('.json')) continue;
-            try {
-              const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
-              if (entry.sessionId && entry.sessionId !== sessionId) {
-                killedSessions.push({ id: entry.sessionId, cwd: entry.cwd || '', name: entry.name || '' });
-              }
-            } catch {}
-          }
-        }
-        if (killedSessions.length > 0) {
-          fs.writeFileSync(path.join(os.homedir(), '.claude', 'phone-recovery.json'),
-            JSON.stringify(killedSessions, null, 2), 'utf-8');
-        }
-      } catch {}
-
-      // 2b. 杀所有 node 进程（Agent 自己除外）
       try {
         const killScript = [
           `$agentPid = ${process.pid}`,
