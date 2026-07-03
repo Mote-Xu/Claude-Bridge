@@ -2,7 +2,7 @@ const express = require('express');
 const config = require('./config');
 const { init, getGroup, addGroup, createSession, getSessionByName, getActiveSessions, listSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck, getProjects, findLatestSession } = require('./ssh');
+const { execClaude, healthCheck, getProjects, findLatestSession, listSessions } = require('./ssh');
 
 wecom.init(config);
 init(config.dbPath);
@@ -35,7 +35,18 @@ async function handleMessage(chatId, userId, text) {
     );
     if (match) {
       addGroup(chatId, match[0], match[1]);
-      await reply(chatId, userId, `🟢 已接入项目：${match[0]}\n用 @会话名 <消息> 开始对话`);
+      const history = await listSessions(match[1]);
+      let msg = `🟢 已接入项目：${match[0]}`;
+      if (history.length > 0) {
+        msg += `\n\n电脑上的历史会话（回复序号续接）：`;
+        history.slice(0, 8).forEach((s, i) => {
+          msg += `\n  ${i + 1}. ${s.summary.slice(0, 40)}`;
+        });
+        msg += '\n\n或 @会话名 <消息> 新建会话';
+      } else {
+        msg += '\n用 @会话名 <消息> 开始对话';
+      }
+      await reply(chatId, userId, msg);
       return;
     }
     const names = Object.keys(projects).map(p => `  · ${p}`).join('\n') || '  (未发现 Claude 项目)';
