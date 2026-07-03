@@ -106,10 +106,16 @@ async function handleMessage(chatId, userId, text) {
     const history = active.filter(s => s.claude_session_id)
       ? rawHistory.filter(h => !active.some(a => a.claude_session_id === h.id))
       : rawHistory;
+    // 用 Agent 返回的最新标题覆盖 DB 里的旧名
+    const titleMap = {};
+    for (const h of rawHistory) { if (h.summary) titleMap[h.id] = h.summary; }
     let msg = `📋 项目：${group.project_name}`;
     if (active.length > 0) {
       msg += '\n\n🟢 活跃中：';
-      active.forEach((s, i) => { msg += `\n  ${i + 1}. @${s.session_name} (${s.message_count}轮)`; });
+      active.forEach((s, i) => {
+        const title = (s.claude_session_id && titleMap[s.claude_session_id]) || s.session_name;
+        msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)`;
+      });
     }
     if (history.length > 0) {
       const startIdx = active.length;
