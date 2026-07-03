@@ -209,10 +209,18 @@ async function handleMessage(chatId, userId, text) {
     return;
   }
 
+  // 项目列表（未绑定项目时可用）
+  if (trimmed === '项目列表' || trimmed === '/projects') {
+    const projects = await discoverProjects();
+    const names = Object.keys(projects).map((p, i) => `  ${i + 1}. ${p}`).join('\n') || '  (未发现 Claude 项目)';
+    await reply(chatId, userId, '📁 可用项目（回复序号接入）：\n' + names);
+    return;
+  }
+
   if (!group) {
     const projects = await discoverProjects();
     const projList = Object.entries(projects);
-    // 纯数字 → 按序号选项目
+    // 纯数字 → 按序号选项目（在项目列表之后使用）
     if (/^\d+$/.test(trimmed)) {
       const idx = parseInt(trimmed) - 1;
       if (idx >= 0 && idx < projList.length) {
@@ -254,8 +262,7 @@ async function handleMessage(chatId, userId, text) {
       await reply(chatId, userId, msg);
       return;
     }
-    const names = Object.keys(projects).map((p, i) => `  ${i+1}. ${p}`).join('\n') || '  (未发现 Claude 项目)';
-    await reply(chatId, userId, '👋 回复序号或项目名：\n' + names);
+    if (trimmed) await reply(chatId, userId, '👋 发「项目列表」查看可用项目\n或直接输入项目名接入');
     return;
   }
 
