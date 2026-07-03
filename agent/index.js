@@ -166,12 +166,13 @@ app.post('/api/list-sessions', (req, res) => {
     if (!fs.existsSync(dir)) return res.json({ sessions: [] });
 
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
-    const sessions = files.map(f => {
+    const sessions = [];
+    for (const f of files) {
       const stat = fs.statSync(path.join(dir, f));
-      // 用创建时间排序（mtime 会因 --resume 而变，导致顺序漂移）
       const sortTime = stat.birthtimeMs || stat.ctimeMs;
-      // 提取摘要...
+      // 提取摘要：读前 50 行，找第一条用户消息
       let summary = '';
+      let hasUserMessage = false;
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
         const lines = content.split('\n').slice(0, 50);
@@ -180,21 +181,24 @@ app.post('/api/list-sessions', (req, res) => {
             const json = JSON.parse(line);
             if (json.type === 'user' && json.message?.content?.[0]?.text) {
               const text = json.message.content[0].text;
-              // 跳过 IDE 事件消息（<ide_*, file opened, etc）
-              if (/^<[a-z_]+>/.test(text)) continue;
-              summary = text.replace(/\n/g, ' ').slice(0, 60);
-              break;
+              // 跳过 IDE 事件消息和 skill 系统消息
+              if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
+              if (!summary) summary = text.replace(/\n/g, ' ').slice(0, 60);
+              hasUserMessage = true;
             }
           } catch {} // skip unparseable lines
         }
       } catch {} // 读文件失败不阻塞
-      return {
+      // 跳过空会话（VS Code 自动创建，没有用户消息）
+      if (!hasUserMessage) continue;
+      sessions.push({
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary,
         sortTime,
-      };
-    }).sort((a, b) => b.sortTime > a.sortTime ? -1 : 1);
+      });
+    }
+    sessions.sort((a, b) => b.sortTime > a.sortTime ? -1 : 1);
 
     res.json({ sessions });
   } catch (err) {
