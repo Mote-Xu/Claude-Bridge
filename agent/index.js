@@ -242,8 +242,8 @@ app.post('/api/list-sessions', (req, res) => {
               // 跳过 IDE 事件消息和 skill 系统消息
               if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
               hasUserMessage = true;
-              // 优先取第一条实质消息（>= 30 字符），短指令不做摘要
-              if (!summary || (summary.length < 30 && text.length >= 30)) {
+              // 优先取第一条实质消息（>= 10 字符），短指令不做摘要
+              if (!summary || (summary.length < 10 && text.length >= 10)) {
                 summary = text.replace(/\n/g, ' ').slice(0, 60);
               }
             }
@@ -321,13 +321,12 @@ app.post('/api/session-preview', (req, res) => {
           // 跳过 IDE 事件和 skill 系统消息
           if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
           userCount++;
-          // 第一条"实质"消息：跳过短指令（< 30 字符），取第一条真正描述问题的
+          // 第一条"实质"消息：跳过短指令（< 10 字符，如 "B+C" "OK" "对"），取第一条真问题
           if (!foundSubstantial) {
-            if (text.length >= 30) {
+            if (text.length >= 10) {
               firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
               foundSubstantial = true;
             } else if (!firstMsg) {
-              // 存着兜底，万一整场对话都没有长消息
               firstMsg = text.replace(/\n/g, ' ').slice(0, 100);
             }
           }
