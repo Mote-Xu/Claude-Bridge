@@ -422,25 +422,24 @@ app.post('/api/session-preview', (req, res) => {
 });
 
 // GET /api/hidden-sessions — 从 VS Code 状态读取被隐藏的会话 ID
-const VSCODE_STATE_DB = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-  'Code', 'User', 'globalStorage', 'state.vscdb');
-
+// 零依赖：直接读 SQLite DB 文件，正则提取 JSON
 app.get('/api/hidden-sessions', (req, res) => {
   try {
-    // 用 sqlite3 读 VS Code 状态（可能不存在）
-    const db = require('better-sqlite3')(VSCODE_STATE_DB, { readonly: true });
-    const row = db.prepare("SELECT value FROM ItemTable WHERE key = 'Anthropic.claude-code'").get();
-    db.close();
-    if (row && row.value) {
-      const match = row.value.match(/"hiddenSessionIds"\s*:\s*(\[[^\]]*\])/);
-      if (match) {
-        const ids = JSON.parse(match[1]);
-        return res.json({ hiddenSessionIds: ids });
-      }
+    const dbPath = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+      'Code', 'User', 'globalStorage', 'state.vscdb');
+    if (!fs.existsSync(dbPath)) return res.json({ hiddenSessionIds: [] });
+
+    const buf = fs.readFileSync(dbPath);
+    // SQLite 小值存在 inline，直接搜 JSON pattern
+    const str = buf.toString('utf-8');
+    const match = str.match(/"hiddenSessionIds"\s*:\s*(\[[^\]]*\])/);
+    if (match) {
+      const ids = JSON.parse(match[1]);
+      return res.json({ hiddenSessionIds: ids });
     }
     res.json({ hiddenSessionIds: [] });
   } catch {
-    res.json({ hiddenSessionIds: [] }); // VS Code 没开或 DB 不存在
+    res.json({ hiddenSessionIds: [] });
   }
 });
 
