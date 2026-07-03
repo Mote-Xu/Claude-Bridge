@@ -241,8 +241,11 @@ app.post('/api/list-sessions', (req, res) => {
               const text = json.message.content[0].text;
               // 跳过 IDE 事件消息和 skill 系统消息
               if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
-              if (!summary) summary = text.replace(/\n/g, ' ').slice(0, 60);
               hasUserMessage = true;
+              // 优先取第一条实质消息（>= 30 字符），短指令不做摘要
+              if (!summary || (summary.length < 30 && text.length >= 30)) {
+                summary = text.replace(/\n/g, ' ').slice(0, 60);
+              }
             }
           } catch {} // skip unparseable lines
         }
@@ -308,24 +311,32 @@ app.post('/api/session-preview', (req, res) => {
     let firstMsg = '', userCount = 0, assistantCount = 0;
     const rounds = []; // 完整的对话轮次 [{user, assistant}]
     let currentUser = null;
+    let foundSubstantial = false;
 
     for (const line of lines) {
       try {
         const j = JSON.parse(line);
         if (j.type === 'user' && j.message?.content?.[0]?.text) {
           const text = j.message.content[0].text;
-          // 跳过 IDE 事件、skill 系统消息、过短消息（< 15 字符）
+          // 跳过 IDE 事件和 skill 系统消息
           if (/^<[a-z_]+>/.test(text) || text.startsWith('Base directory for')) continue;
-          if (text.length < 15) continue;
           userCount++;
-          if (!firstMsg) firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+          // 第一条"实质"消息：跳过短指令（< 30 字符），取第一条真正描述问题的
+          if (!foundSubstantial) {
+            if (text.length >= 30) {
+              firstMsg = text.replace(/\n/g, ' ').slice(0, 200);
+              foundSubstantial = true;
+            } else if (!firstMsg) {
+              // 存着兜底，万一整场对话都没有长消息
+              firstMsg = text.replace(/\n/g, ' ').slice(0, 100);
+            }
+          }
           if (currentUser) rounds.push({ user: currentUser, assistant: '' });
           currentUser = text;
         }
         if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
           assistantCount++;
           const text = j.message.content[0].text;
-          // 找最近的空位填入
           if (rounds.length > 0 && !rounds[rounds.length - 1].assistant) {
             rounds[rounds.length - 1].assistant = text;
           }
