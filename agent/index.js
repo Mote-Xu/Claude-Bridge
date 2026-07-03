@@ -282,8 +282,16 @@ app.post('/api/list-sessions', (req, res) => {
           } catch {} // skip unparseable lines
         }
       } catch {} // 读文件失败不阻塞
-      // 跳过空会话（VS Code 自动创建，没有用户消息）
+      // 跳过空/已删除会话（VS Code 自动创建或用户删了但文件残留）
       if (!hasUserMessage) continue;
+      let userMsgCount = 0;
+      try {
+        const content = fs.readFileSync(path.join(dir, f), 'utf-8');
+        for (const line of content.split('\n').slice(0, 200)) {
+          try { const j = JSON.parse(line); if (j.type === 'user') userMsgCount++; } catch {}
+        }
+      } catch {}
+      if (userMsgCount < 3) continue; // 至少 3 条用户消息才算真会话
       sessions.push({
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
