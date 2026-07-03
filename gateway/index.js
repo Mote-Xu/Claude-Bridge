@@ -81,7 +81,7 @@ async function handleMessage(chatId, userId, text) {
     const num = parseInt(previewMatch[1]);
     const active = getActiveSessions(chatId);
     let rawHistory = await listSessions(group.project_path);
-    rawHistory = filterHidden(rawHistory, chatId);
+    rawHistory = await filterHidden(rawHistory);
     const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
     const history = rawHistory.filter(h => !activeClaudeIds.has(h.id));
 
@@ -170,7 +170,7 @@ async function handleMessage(chatId, userId, text) {
   if (trimmed === '列表' || trimmed === '/list') {
     const active = getActiveSessions(chatId);
     let rawHistory = await listSessions(group.project_path);
-    rawHistory = filterHidden(rawHistory, chatId);
+    rawHistory = await filterHidden(rawHistory);
     const history = active.filter(s => s.claude_session_id)
       ? rawHistory.filter(h => !active.some(a => a.claude_session_id === h.id))
       : rawHistory;
@@ -245,7 +245,7 @@ async function handleMessage(chatId, userId, text) {
       if (idx >= 0 && idx < projList.length) {
         const [name, cwd] = projList[idx];
         addGroup(chatId, name, cwd);
-        const history = filterHidden(await listSessions(cwd));
+        const history = await filterHidden(await listSessions(cwd));
         let msg = `🟢 已接入项目：${name}`;
         if (history.length > 0) {
           msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
@@ -266,7 +266,7 @@ async function handleMessage(chatId, userId, text) {
     );
     if (match) {
       addGroup(chatId, match[0], match[1]);
-      const history = filterHidden(await listSessions(match[1]));
+      const history = await filterHidden(await listSessions(match[1]));
       let msg = `🟢 已接入项目：${match[0]}`;
       if (history.length > 0) {
         msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
@@ -292,7 +292,7 @@ async function handleMessage(chatId, userId, text) {
     if (/^\d+$/.test(trimmed)) {
       const active = getActiveSessions(chatId);
       let rawHistory = await listSessions(group.project_path);
-      rawHistory = filterHidden(rawHistory, chatId);
+      rawHistory = await filterHidden(rawHistory);
       // 去掉已激活的历史会话，避免同一会话占两个序号
       const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
       const history = rawHistory.filter(h => !activeClaudeIds.has(h.id));
@@ -337,7 +337,7 @@ async function handleMessage(chatId, userId, text) {
       msg += '\n\n🟢 活跃中：';
       active.forEach((s, i) => { msg += `\n  ${i + 1}. @${s.session_name} (${s.message_count}轮)`; });
     }
-    const history = filterHidden(await listSessions(group.project_path));
+    const history = await filterHidden(await listSessions(group.project_path));
     if (history.length > 0) {
       const startIdx = active.length;
       msg += '\n\n💻 电脑历史会话：';
