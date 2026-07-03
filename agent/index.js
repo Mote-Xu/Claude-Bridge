@@ -373,8 +373,8 @@ app.post('/api/session-preview', (req, res) => {
         if (j.type === 'assistant' && j.message?.content?.[0]?.text && currentUser) {
           assistantCount++;
           const text = j.message.content[0].text;
-          if (rounds.length > 0 && !rounds[rounds.length - 1].assistant) {
-            rounds[rounds.length - 1].assistant = text;
+          if (rounds.length > 0) {
+            rounds[rounds.length - 1].assistant = text; // 始终覆盖，最后一条 text 才是真回复
           }
         }
       } catch {}
