@@ -114,9 +114,14 @@ async function handleMessage(chatId, userId, text) {
       const history = await listSessions(group.project_path);
       const num = parseInt(trimmed);
 
-      // 匹配活跃会话
+      // 清理所有旧活跃会话，确保选中后唯一定向
+      for (const s of active) updateSessionStatus(s.id, 'ended');
+
+      // 匹配活跃会话（现在 active 是上面查的，还没被清理）
       if (num >= 1 && num <= active.length) {
         const s = active[num - 1];
+        // 恢复该会话的活跃状态
+        updateSessionStatus(s.id, 'active');
         await reply(chatId, userId, `📋 @${s.session_name} (${s.message_count}轮)\n发消息继续对话`);
         return;
       }
@@ -125,7 +130,7 @@ async function handleMessage(chatId, userId, text) {
       const histIdx = num - active.length - 1;
       if (histIdx >= 0 && histIdx < history.length) {
         const h = history[histIdx];
-        const label = h.date || h.id.slice(0, 8);
+        const label = (h.summary || h.date || h.id.slice(0, 8)).slice(0, 25);
         createSession(chatId, label, '');
         const s = getSessionByName(chatId, label);
         if (s) updateClaudeSessionId(s.id, h.id);
