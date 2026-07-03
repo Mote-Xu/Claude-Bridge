@@ -420,6 +420,12 @@ app.post('/api/session-preview', (req, res) => {
   }
 });
 
+// POST /api/reload — 重启 Agent（Gateway 部署后调，看门狗自动拉起）
+app.post('/api/reload', (req, res) => {
+  res.json({ status: 'restarting' });
+  setTimeout(() => process.exit(0), 100);
+});
+
 // GET /api/hidden-sessions — 从 VS Code 状态读取被隐藏的会话 ID
 // 零依赖：直接读 SQLite DB 文件，正则提取 JSON
 app.get('/api/hidden-sessions', (req, res) => {

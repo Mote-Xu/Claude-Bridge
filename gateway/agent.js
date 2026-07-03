@@ -116,4 +116,8 @@ async function getSessionIds(projectPath) {
   }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall };
+async function reloadAgent() {
+  try { await agentCall('POST', '/api/reload', null, 5000); return true; } catch { return false; }
+}
+
+module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, reloadAgent };
