@@ -23,6 +23,10 @@
 - [x] 手动隐藏/取消隐藏会话命令
 - [x] 会话预览（话题消息 + 最近几轮对话 + 统计）
 - [x] SSH 服务已关闭（Windows sshd stopped + disabled，mote-home 公钥已删除）
+- [x] 项目重命名 → 会话迁移（批量改 JSONL cwd + 移动目录）
+- [x] list-sessions 不限行数扫描（修复大文件会话漏显 bug）
+- [x] Clawd → Claude-Bridge 全量重命名（代码、systemd unit、目录、DB）
+- [x] 看门狗精简（删除 Task Scheduler + watchdog.vbs，只留 VBS 自守护）
 
 ## v1 已知限制
 
@@ -30,6 +34,7 @@
 
 ## v2 候选
 
+- [ ] 会话间通信（Claude 会话通过 Bridge 互发消息，企微变消息总线）
 - [ ] 定时推送（日报/服务器健康）
 - [ ] 流式输出
 - [ ] 企业微信异步客服消息推送

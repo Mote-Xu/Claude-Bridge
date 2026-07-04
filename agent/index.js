@@ -1,4 +1,4 @@
-// Clawd Windows Agent
+// Claude-Bridge Windows Agent
 // 本地 HTTP 服务 (127.0.0.1:9877)，替代 SSH 远程执行
 // 开机自启：把 start.bat 快捷方式放到 shell:startup 文件夹
 
@@ -94,25 +94,37 @@ app.post('/api/run-claude', (req, res) => {
   const { sessionId, message, cwd } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
 
-  const msgFile = path.join(os.tmpdir(), 'clawd-msg.txt');
-  const batFile = path.join(os.tmpdir(), 'clawd-run.bat');
+  const msgFile = path.join(os.tmpdir(), 'bridge-msg.txt');
+  const batFile = path.join(os.tmpdir(), 'bridge-run.bat');
 
   try {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: 关 VS Code（保存状态 → 下次打开自动恢复所有会话和终端）
-    // 手机发消息 = 人不在电脑前，安全关闭 VS Code
+    // Step 2: 精准关闭目标会话（只关这一个，不动其他会话和 VS Code）
     if (sessionId) {
       try {
-        // taskkill 关 code.exe（会先保存状态再退出）
-        execSync(`taskkill /f /im code.exe`, { timeout: 5000, windowsHide: true });
-        execSync(`timeout /t 2 /nobreak >nul`, { timeout: 3000, windowsHide: true });
-      } catch {} // VS Code 没开着也不阻塞
+        const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
+        if (fs.existsSync(sessionsDir)) {
+          for (const f of fs.readdirSync(sessionsDir)) {
+            if (!f.endsWith('.json')) continue;
+            try {
+              const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
+              if (entry.sessionId === sessionId) {
+                const targetPid = parseInt(f.replace('.json', ''));
+                if (targetPid && targetPid > 0) {
+                  execSync(`taskkill /f /pid ${targetPid}`, { timeout: 5000, windowsHide: true });
+                  execSync(`timeout /t 1 /nobreak >nul`, { timeout: 2000, windowsHide: true });
+                }
+                break;
+              }
+            } catch {}
+          }
+        }
+      } catch {} // 会话未在 VS Code 中打开，无需关闭
 
       // 注册会话到 Claude Code 索引（--resume 查索引不查文件）
       try {
-        const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
         // 检查是否已在索引中
         let alreadyIndexed = false;
         if (fs.existsSync(sessionsDir)) {
@@ -158,7 +170,7 @@ app.post('/api/run-claude', (req, res) => {
             peerProtocol: 1,
             kind: 'interactive',
             entrypoint,
-            name: `clawd-${sessionId.slice(0, 8)}`,
+            name: `bridge-${sessionId.slice(0, 8)}`,
             nameSource: 'derived',
           };
           const indexFile = path.join(sessionsDir, `${process.pid}.json`);
@@ -248,30 +260,20 @@ app.post('/api/list-sessions', (req, res) => {
               const ts = new Date(j.timestamp).getTime();
               if (!isNaN(ts)) lastActivity = ts;
             }
-          } catch {}
-        }
-        const lines = allLines.slice(0, 50);
-        for (const line of lines) {
-          try {
-            const json = JSON.parse(line);
-            if (json.type === 'user' && json.message?.content?.[0]?.text) {
-              const text = json.message.content[0].text;
-              // 跳过 IDE 事件
-              if (/^<[a-z_]+>/.test(text)) continue;
-              // skill 调用：取 ARGUMENTS
+            // 搜索第一条有效用户消息（不限行数，前面的 IDE 事件会跳过）
+            if (!hasUserMessage && j.type === 'user' && j.message?.content?.[0]?.text) {
+              const text = j.message.content[0].text;
+              if (/^<[a-z_]+>/.test(text)) continue; // 跳过 IDE 事件
               let displayText = text;
               if (text.startsWith('Base directory for')) {
                 const argsMatch = text.match(/\nARGUMENTS:\s*(.+)$/);
                 if (argsMatch) { displayText = argsMatch[1]; }
-                else { continue; }
+                else { continue; } // skill 调用但没有参数，跳过
               }
               hasUserMessage = true;
-              // 优先取第一条实质消息（>= 10 字符），短指令不做摘要
-              if (!summary || (summary.length < 10 && displayText.length >= 10)) {
-                summary = displayText.replace(/\n/g, ' ').slice(0, 60);
-              }
+              summary = displayText.replace(/\n/g, ' ').slice(0, 60);
             }
-          } catch {} // skip unparseable lines
+          } catch {}
         }
       } catch {} // 读文件失败不阻塞
       // 跳过空会话（VS Code 自动创建，没有用户消息）
@@ -451,7 +453,7 @@ app.get('/api/hidden-sessions', (req, res) => {
 
 // ========== 启动 ==========
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Clawd Agent v1.0 — http://0.0.0.0:${PORT}`);
+  console.log(`Claude-Bridge Agent — http://0.0.0.0:${PORT}`);
   console.log(`Projects dir: ${PROJECTS_DIR}`);
   console.log(`Claude bin: ${CLAUDE_BIN}`);
   console.log(`Ready.`);

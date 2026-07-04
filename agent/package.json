@@ -1,5 +1,5 @@
 {
-  "name": "clawd-agent",
+  "name": "claude-bridge-agent",
   "version": "1.0.0",
   "description": "Windows local agent for Claude Bridge — replaces SSH with HTTP",
   "main": "index.js",

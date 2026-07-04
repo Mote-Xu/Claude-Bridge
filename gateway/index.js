@@ -60,15 +60,18 @@ async function handleMessage(chatId, userId, text) {
   // 帮助
   if (trimmed === '/help' || trimmed === '帮助') {
     await reply(chatId, userId,
-      '🤖 Clawd 命令：\n' +
+      '🤖 Claude-Bridge 命令：\n' +
+      '  项目列表 / /projects — 列出所有项目\n' +
       '  列表 / /list — 查看当前项目所有会话\n' +
-      '  序号(1,2,3…) — 切换会话\n' +
+      '  预览 <序号> — 查看会话详情\n' +
+      '  序号(1,2,3…) — 续接/切换会话\n' +
       '  切换 <项目名> — 换一个项目\n' +
       '  退出 / /leave — 退出当前项目\n' +
       '  @会话名 <消息> — 发给指定会话\n' +
       '  @会话名 stop — 中断会话\n' +
       '  @会话名 done — 结束会话\n' +
-      '  序号 — 续接历史会话\n' +
+      '  隐藏 <序号> / 取消隐藏 <序号> — 隐藏/恢复会话\n' +
+      '  隐藏列表 / /hidden — 查看已隐藏的会话\n' +
       '  直接发消息 — 发给当前活跃会话'
     );
     return;
@@ -368,6 +371,54 @@ async function handleMessage(chatId, userId, text) {
   await handleSessionMessage(chatId, userId, existing, message, group, sessionName);
 }
 
+// Bridge 路由：解析 @bridge:notify，转发到目标会话
+async function bridgeRoute(chatId, userId, output, group, sourceName) {
+  const match = output.match(/@bridge:notify\s+(\S+)\s+([\s\S]+)/);
+  if (!match) return null;
+
+  const [, targetName, bridgeMsg] = match;
+  const cleanMsg = bridgeMsg.trim();
+  if (!cleanMsg) return null;
+
+  // 查目标会话：先 Gateway DB，再扫项目会话列表
+  let targetSession = getSessionByName(chatId, targetName);
+  if (!targetSession) {
+    const sessions = await listSessions(group.project_path);
+    const found = sessions.find(s =>
+      (s.name && s.name.includes(targetName)) ||
+      (s.summary && s.summary.includes(targetName))
+    );
+    if (found) {
+      createSession(chatId, targetName, cleanMsg.slice(0, 50));
+      targetSession = getSessionByName(chatId, targetName);
+      if (targetSession) updateClaudeSessionId(targetSession.id, found.id);
+    }
+  }
+
+  if (!targetSession) {
+    await reply(chatId, userId, `❌ Bridge: 未找到目标会话 "${targetName}"`);
+    return { handled: true };
+  }
+
+  await reply(chatId, userId, `🔗 @${sourceName} → @${targetName}\n⏳ 处理中...`);
+
+  try {
+    const result = await execClaude(
+      targetSession.claude_session_id, cleanMsg,
+      { cwd: group.project_path }
+    );
+    const targetOutput = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
+    await reply(chatId, userId, `🔗 @${targetName}:\n${targetOutput}`);
+    auditLog(chatId, targetSession.id, 'out', targetOutput);
+    touchSession(targetSession.id);
+    if (result.newSessionId) updateClaudeSessionId(targetSession.id, result.newSessionId);
+  } catch (err) {
+    await reply(chatId, userId, `❌ Bridge → @${targetName}: ${err.message.slice(0, 300)}`);
+  }
+
+  return { handled: true };
+}
+
 async function handleSessionMessage(chatId, userId, existingSession, message, group, sessionName) {
   const online = await healthCheck();
   if (!online) {
@@ -395,8 +446,8 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
 
   try {
     const result = await execClaude(claudeSid, message, { cwd: group.project_path });
-    const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
-    await reply(chatId, userId, `Claude·${name}:\n${output}`);
+    const fullOutput = result.stdout || result.stderr || '(无输出)';
+    const output = fullOutput.slice(0, 3800);
     auditLog(chatId, existingSession?.id || null, 'out', output);
 
     const s = existingSession || getSessionByName(chatId, name);
@@ -409,6 +460,12 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
         if (newSid) updateClaudeSessionId(s.id, newSid);
       }
     }
+
+    // Bridge 路由：检测 @bridge:notify，拦截并转发到目标会话
+    const bridgeResult = await bridgeRoute(chatId, userId, fullOutput, group, name);
+    if (bridgeResult?.handled) return; // Bridge 已处理，不发原始输出
+
+    await reply(chatId, userId, `Claude·${name}:\n${output}`);
   } catch (err) {
     await reply(chatId, userId, `Claude·${name}:\n❌ ${err.message.slice(0, 500)}`);
   }
@@ -432,7 +489,7 @@ app.post('/webhook', async (req, res) => {
         const chatId = msg.ChatId || msg.FromUserName;
         const projects = await discoverProjects();
         const names = Object.keys(projects).map(p => `  · ${p}`).join('\n') || '  (未发现电脑上的 Claude 项目)';
-        wecom.sendMessage(chatId, '', '👋 Clawd 已就绪！\n请告诉我要接入的项目名：\n' + names)
+        wecom.sendMessage(chatId, '', '👋 Claude-Bridge 已就绪！\n请告诉我要接入的项目名：\n' + names)
           .catch(err => console.error('Welcome error:', err));
       }
       return res.send('success');
@@ -486,4 +543,4 @@ async function drainPendingTasks() {
 }
 setInterval(drainPendingTasks, 30000);
 
-app.listen(config.port, '127.0.0.1', () => console.log(`clawd Gateway on 127.0.0.1:${config.port}`));
+app.listen(config.port, '127.0.0.1', () => console.log(`Claude-Bridge Gateway on 127.0.0.1:${config.port}`));

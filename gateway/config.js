@@ -1,4 +1,4 @@
-// clawd Gateway 配置
+// Claude-Bridge Gateway 配置
 // 部署到 mote-home 后根据实际值修改
 
 module.exports = {
@@ -22,5 +22,5 @@ module.exports = {
   },
 
   // 数据库
-  dbPath: '/mnt/data/clawd/clawd.db',
+  dbPath: '/mnt/data/claude-bridge/bridge.db',
 };

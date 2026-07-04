@@ -1,133 +1,123 @@
-# Claude Bridge — 外部 AI 验证问题
+# Claude Bridge — 外部 AI 讨论
 
-> 先读完本文档，然后逐一回答后面的验证问题。你的答案用来确认你是否真正理解了这个项目。
+> 先把本文档读完，再回答最后的验证问题和设计问题。
 
 ---
 
 ## 项目是什么
 
-手机（企业微信）是电脑前 Claude Code 的"第二屏幕"。不是新建一个 AI——电脑上已有的 Claude Code 会话，手机无缝续接，回到电脑继续，所有对话双向同步。
+Claude Bridge — 企业微信是连接多个 Claude Code 会话的**消息总线**。
+
+手机（企微）→ Gateway（mote-home 24/7）→ Windows Agent → `claude.cmd --resume`。电脑上已有的 Claude 会话，手机无缝续接，回到电脑继续，双向同步。
+
+更深一层：**既然人可以给任意会话发消息，会话也能回复人，那会话之间也应该能互发消息。** 企微变成了 Claude 会话的异步协调总线。
 
 ---
 
-## 当前架构（v1.5 — 2026-07-04 已完成）
+## 当前架构（v1.5 — 2026-07-05）
 
 ```
 企业微信 App → Bot API (webhook)
-  → Node.js Gateway (mote-home Linux, 24/7, :8933)
-    → HTTP → Windows Agent (:9877)
+  → Node.js Gateway (mote-home, 127.0.0.1:8933)
+    → HTTP → Windows Agent (100.80.205.79:9877)
       → claude --resume <id>
 ```
 
-- Gateway：消息路由、会话管理、任务队列、企业微信加解密、定时 drain
-- Agent：本地读写 Claude 的 session store、本地 pipe 执行 `claude.cmd`
-- Claude Code：唯一 AI 决策层，Gateway 和 Agent 都不做推理
-- 纯 HTTP 架构，无 SSH 依赖。Windows sshd 已停止并禁用，mote-home 公钥已删除
+- **Gateway**：消息路由、会话管理、任务队列、企业微信加解密、定时 drain。**不做 AI 推理。**
+- **Agent**：本地读写 `~/.claude/projects/`，pipe 执行 `claude.cmd`。**不做 AI 推理。**
+- **Claude Code**：**唯一 AI 层。**
+- 纯 HTTP，无 SSH。Windows sshd 已关闭。
 
 ---
 
 ## 交互模型
 
-### 私聊 = 一个项目
-
-- 一个企业微信私聊 → 绑一个项目文件夹
-- 发「切换 <项目名>」换项目
-- 发「项目列表」→ 60 秒内回复序号接入
-
-### 会话 = Claude Code 的历史会话
-
-- 会话来源 `%USERPROFILE%\.claude\projects\`，和电脑上同一套
-- 手机 `--resume` 续接，上下文完整保留
-- 回电脑 `claude --continue`，手机对话也在里面
-
-### 命令
-
 ```
-项目列表               → 列出项目（60s 序号窗口）
-<项目名>               → 接入项目
-切换 <项目名>           → 换项目
-退出                   → 退出项目
-列表                   → 查看所有会话（含 aiTitle）
-预览 <序号>             → 话题 + 最近几轮
-隐藏 <序号>             → 隐藏（同步 VS Code）
-<序号>                 → 选择会话
-@会话名 <消息>          → 指定会话
-直接发消息              → 唯一活跃会话自动路由
+私聊/群聊 → 绑定一个项目文件夹
+  ├── 会话 A（active）  ← @重构 消息
+  ├── 会话 B（idle）    ← @导出 消息
+  └── 会话 C（ended）
+
+命令：
+  项目列表 / <项目名> / 切换 / 退出 / 列表 / 预览 / 隐藏 / 序号 / @会话名
 ```
 
-### 桌面同步
-
-```
-手机发消息 → taskkill 关 VS Code → --resume → 结果返回微信
-回电脑 → 重开 VS Code → 全部会话和终端自动恢复
-```
+Agent 7 个 API：health / discover / list-sessions / run-claude / session-preview / hidden-sessions / reload
 
 ---
 
-## 代码结构
+## 🆕 核心要讨论的问题
+
+### 问题 1：会话间通信总线
+
+**现状**：
 
 ```
-gateway/          ← mote-home 上运行
-  index.js        ← Express webhook + 消息路由 + 群聊逻辑
-  agent.js        ← HTTP 客户端，调 Windows Agent
-  db.js           ← SQLite（群绑定/会话/任务队列/审计/隐藏）
-  wecom.js        ← 企业微信加解密 + 消息发送
-  config.js       ← 配置
-
-agent/            ← Windows 本地运行
-  index.js        ← Express :9877，7 个 API
-  start-hidden.vbs — 后台静默 + VBS 守护（崩溃 5s 自愈）
+你 ──→ Gateway ──→ Agent ──→ 会话 A（返回结果给你）
+你 ──→ Gateway ──→ Agent ──→ 会话 B（返回结果给你）
 ```
 
+**发现**：Gateway 已经在中间，双向都能走。只要 Gateway 收到 Claude 输出后**不发给你的企微，而是转发给另一个会话**，就实现了会话间通信。
+
+```
+会话 A（架构设计）──→ "@bridge:send 数据库专家 帮我查表结构"
+                      ↓
+               Gateway 解析 @bridge:send
+                      ↓
+                  Agent → 会话 B（数据库专家）
+                      ↓
+               结果发回给你（或转回给会话 A）
+```
+
+**这意味着**：
+- 不再是你和单个会话一对一
+- 你在**协调一支 Claude 团队**，各司其职
+- 企微变成异步消息总线，会话是挂在总线上的节点
+
+### 问题 2：协议设计
+
+最简单的 v1 协议：Claude 输出中包含特殊标记，Gateway 解析后路由。
+
+```
+@bridge:send <目标会话名> <消息内容>
+@bridge:ask  <目标会话名> <问题>  ← 把回答发回给发起方
+@bridge:broadcast <消息>           ← 发给当前项目所有活跃会话
+```
+
+**需要讨论的**：
+1. 这个协议应该怎么设计？越简单越好，但要能覆盖核心场景。
+2. 会话间通信的"身份"问题——会话 A 怎么知道自己该和谁对话？需要"团队配置"文件吗？
+3. 安全性——会话 A 能不能给其他项目的会话发消息？应该限制在当前项目内还是全局？
+4. 这个方案和 Claude Code 原生的 Task/tool 机制（sub-agent spawn）之间是什么关系？互补还是冲突？
+
+### 问题 3：Agent 的瓶颈
+
+当前 Agent 的一个限制：`run-claude` 会先 `taskkill code.exe`（关 VS Code 防止 session lock 冲突），然后 pipe 执行 Claude。这意味着：
+
+- **每次只能跑一个会话**（因为 VS Code 被关了，所有会话都要通过 Agent pipe 续接）
+- 如果会话 A 想调会话 B，会话 B 也需要 --resume —— 而 A 正在 pipe 中运行
+
+**需要讨论的**：
+1. 是否应该放弃 taskkill 策略，转而用 session lock 超时等待？
+2. 如果保留 taskkill，会话间通信是否只能走"排队"模式（A 执行完 → Gateway 再触发 B）？
+3. 有没有办法让多个 Claude 进程同时运行（不关 VS Code）？
+
+### 问题 4：这是不是过度设计？
+
+1. Claude Code v2 可能已经内置了多 agent 协作（sub-agent spawn、Task tool）。等官方方案成熟后，Bridge 的会话间通信会不会变成重复造轮子？
+2. 但 Bridge 的价值在于**异步 + 跨项目 + 移动端消息总线**——Claude Code 原生方案可能只限于同一项目内的同步 spawn。这两者是否有本质区别？
+3. 如果真的要做，最小可行实现是什么？不要画大饼，给出能在一个晚上写出来的方案。
+
 ---
 
-## Agent 7 个 API
-
-| 接口 | 功能 |
-|------|------|
-| `GET /api/health` | 在线检测 |
-| `POST /api/discover` | 扫描 `.claude\projects\`，按最近活跃排序 |
-| `POST /api/list-sessions` | 列 JSONL 文件，含 aiTitle 摘要 |
-| `POST /api/run-claude` | pipe 调 `claude.cmd --resume` |
-| `POST /api/session-preview` | 话题消息 + 最近几轮 + 统计 |
-| `GET /api/hidden-sessions` | 读 VS Code state.vscdb 取 hiddenSessionIds |
-| `POST /api/reload` | 退出进程（VBS 守护拉起 = 热重载） |
-
----
-
-## 已验证 ✅
-
-- ✅ 企业微信端到端全链路
-- ✅ Agent HTTP 纯架构（无 SSH，Windows sshd 已关）
-- ✅ `--resume` + `cd /d` 修复
-- ✅ 会话标题 = Claude Code aiTitle（与 VS Code 一致）
-- ✅ VS Code 删除会话自动隐藏（state.vscdb hiddenSessionIds，零依赖）
-- ✅ taskkill 关 VS Code → 重开自动恢复会话
-- ✅ VBS 守护循环（零窗口闪现，崩溃 5 秒自愈）
-- ✅ `/api/reload` 热重载
-- ✅ 离线排队 + 30 秒 drain
-- ✅ 项目按最近活跃排序（mtime，已修复 projectName bug）
-
-## 待改进
-
-- 🔲 流式输出
-- 🔲 Agent 鉴权（Tailscale 隔离下暂时可接受）
-- 🔲 VS Code 会话可见性（pipe 模式限制）
-
----
-
-## 验证问题
+## 验证问题（确认你理解了现有系统）
 
 1. 用户在企业微信群里发了 `@重构 把用户模块换成 TypeScript`。从这条消息发出到 Claude Code 收到、执行、返回结果的完整路径是什么？
 
-2. 用户在电脑上用 VS Code 先创建了一个会话（session ID: `abc-123`），和 Claude 聊了 3 轮。然后出门，手机发 `@导出 继续`——这个"继续"能否接到刚才那个会话？为什么？
+2. 电脑关了，手机发消息会发生什么？电脑重新开机后呢？
 
-3. 用户同时开着 Stardust_Chat 群和 Mobile_Dev 群。他在 Mobile_Dev 群里发了一条消息。Stardust_Chat 群的会话会受影响吗？为什么？
+3. Gateway 和 Agent 都不做 AI 推理。如果有人往 Agent 里加了 `const answer = await openai.chat(...)` 代码，违反了这条项目的什么核心原则？
 
-4. 用户的 Windows 电脑关机了（但 mote-home 还在跑）。他在手机上发了一条消息。这条消息会发生什么？当电脑重新开机后会发生什么？
+4. 用户发消息时 VS Code 会被 taskkill 关掉。为什么？如果改成不关 VS Code，会遇到什么问题？
 
-5. 现在 Gateway 只有一条路执行 Claude：HTTP Agent。Agent 不可用时（比如 Agent 进程挂了），Gateway 怎么做？Agent 恢复后呢？
-
-6. Agent 当前没有加认证保护（任何人能调 `http://100.80.205.79:9877`）。这个风险在 Tailscale 的隔离下是否可接受？如果要加固，最低成本的做法是什么？
-
-7. **最关键的验证**：这套方案中，Claude Code 是唯一 AI 决策层。Agent 和 Gateway 做了哪些事但绝对不能做 AI 推理？如果有人在 Agent 里加了一段 `const answer = await openai.chat(...)` 的代码，违反了什么原则？
+5. 当前 Agent 用 VBS 守护循环（`start-hidden.vbs`，进程退出 5 秒后拉起）。把这个和 Task Scheduler 每 5 分钟轮询的方案对比：VBS 方案的优缺点？
