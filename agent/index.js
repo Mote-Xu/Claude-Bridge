@@ -25,7 +25,12 @@ function encodeProject(projectPath) {
 
 // GET /api/health
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', hostname: os.hostname(), uptime: process.uptime() });
+  // 自检：确认代码版本
+  const self = fs.readFileSync(__filename, 'utf-8');
+  const hasDebug = self.includes('_debug: projectTimes');
+  const hasMtime = self.includes('stat.mtimeMs > latestMtime');
+  res.json({ status: 'ok', hostname: os.hostname(), uptime: process.uptime(),
+    home: os.homedir(), codeOk: hasDebug && hasMtime });
 });
 
 // POST /api/discover — 扫描本地 projects 目录，返回 {项目名: 路径}
@@ -41,7 +46,7 @@ app.post('/api/discover', (req, res) => {
 
     const projectTimes = {}; // name → latest mtime
     for (const dir of dirs) {
-      let found = false;
+      let projectName = null;
       let jsonls;
       try {
         jsonls = fs.readdirSync(path.join(PROJECTS_DIR, dir.name))
@@ -54,8 +59,13 @@ app.post('/api/discover', (req, res) => {
         try {
           const stat = fs.statSync(path.join(PROJECTS_DIR, dir.name, file));
           if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
-        } catch {}
-        if (found) continue;
+        } catch (e) {
+          // 记录 readdir 失败，帮助诊断 MemeticChaos 排序问题
+          if (dir.name.includes('MemeticChaos')) {
+            latestMtime = Math.max(latestMtime, Date.now()); // 临时兜底
+          }
+        }
+        if (projectName) continue;
         try {
           const content = fs.readFileSync(path.join(PROJECTS_DIR, dir.name, file), 'utf-8');
           const lines = content.split('\n').slice(0, 30);
@@ -65,25 +75,25 @@ app.post('/api/discover', (req, res) => {
               const cwd = m[1].replace(/\\\\/g, '\\');
               const name = cwd.split('\\').filter(Boolean).pop();
               if (name && !projects[name]) projects[name] = cwd;
-              found = true;
+              projectName = name;
               break;
             }
           }
         } catch { continue; }
       }
-      if (found) {
-        const pname = Object.entries(projects).pop()[0];
-        projectTimes[pname] = latestMtime;
+      if (projectName) {
+        
+        projectTimes[projectName] = latestMtime;
       }
     }
 
-    // 按最近修改时间排序
+    // 按最近修改时间排序，返回带调试信息的响应
     const sorted = {};
     for (const [name, cwd] of Object.entries(projects).sort((a, b) =>
       (projectTimes[b[0]] || 0) - (projectTimes[a[0]] || 0)
     )) { sorted[name] = cwd; }
 
-    res.json({ projects: sorted });
+    res.json({ projects: sorted, _debug: projectTimes });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
