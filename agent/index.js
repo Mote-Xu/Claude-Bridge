@@ -25,12 +25,7 @@ function encodeProject(projectPath) {
 
 // GET /api/health
 app.get('/api/health', (req, res) => {
-  // 自检：确认代码版本
-  const self = fs.readFileSync(__filename, 'utf-8');
-  const hasDebug = self.includes('_debug: projectTimes');
-  const hasMtime = self.includes('stat.mtimeMs > latestMtime');
-  res.json({ status: 'ok', hostname: os.hostname(), uptime: process.uptime(),
-    home: os.homedir(), codeOk: hasDebug && hasMtime });
+  res.json({ status: 'ok', hostname: os.hostname(), uptime: process.uptime() });
 });
 
 // POST /api/discover — 扫描本地 projects 目录，返回 {项目名: 路径}
@@ -59,12 +54,7 @@ app.post('/api/discover', (req, res) => {
         try {
           const stat = fs.statSync(path.join(PROJECTS_DIR, dir.name, file));
           if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
-        } catch (e) {
-          // 记录 readdir 失败，帮助诊断 MemeticChaos 排序问题
-          if (dir.name.includes('MemeticChaos')) {
-            latestMtime = Math.max(latestMtime, Date.now()); // 临时兜底
-          }
-        }
+        } catch {}
         if (projectName) continue;
         try {
           const content = fs.readFileSync(path.join(PROJECTS_DIR, dir.name, file), 'utf-8');
@@ -87,13 +77,13 @@ app.post('/api/discover', (req, res) => {
       }
     }
 
-    // 按最近修改时间排序，返回带调试信息的响应
+    // 按最近修改时间排序
     const sorted = {};
     for (const [name, cwd] of Object.entries(projects).sort((a, b) =>
       (projectTimes[b[0]] || 0) - (projectTimes[a[0]] || 0)
     )) { sorted[name] = cwd; }
 
-    res.json({ projects: sorted, _debug: projectTimes });
+    res.json({ projects: sorted });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
