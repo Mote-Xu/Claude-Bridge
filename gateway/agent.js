@@ -65,8 +65,14 @@ async function getSessionIds(projectPath) {
   } catch { return new Set(); }
 }
 
+async function recordChronicle(projectPath, sessionName, type, content, source) {
+  try {
+    await agentCall('POST', '/api/chronicle', { projectPath, sessionName, type, content, source }, 5000);
+  } catch {} // 静默失败，不阻塞主流程
+}
+
 async function reloadAgent() {
   try { await agentCall('POST', '/api/reload', null, 5000); return true; } catch { return false; }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, reloadAgent };
+module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, recordChronicle, reloadAgent };

@@ -428,6 +428,29 @@ app.post('/api/reload', (req, res) => {
   setTimeout(() => process.exit(0), 100);
 });
 
+// POST /api/chronicle — 写会话公开记录到项目目录
+app.post('/api/chronicle', (req, res) => {
+  const { projectPath, sessionName, type, content, source } = req.body;
+  if (!projectPath || !sessionName || !content) return res.status(400).json({ error: 'projectPath, sessionName, content required' });
+
+  try {
+    const chronicleDir = path.join(projectPath, '.bridge', 'sessions');
+    if (!fs.existsSync(chronicleDir)) fs.mkdirSync(chronicleDir, { recursive: true });
+
+    const file = path.join(chronicleDir, `@${sessionName}.md`);
+    const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const sourceLabel = source ? ` [${source}]` : '';
+    const typeIcon = type === 'in' ? '👤' : '🤖';
+
+    let entry = `\n## ${ts}${sourceLabel}\n${typeIcon}: ${content.slice(0, 2000)}\n`;
+    fs.appendFileSync(file, entry, 'utf-8');
+
+    res.json({ status: 'ok' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/kill-vscode — 手动关闭 VS Code
 app.post('/api/kill-vscode', (req, res) => {
   try {

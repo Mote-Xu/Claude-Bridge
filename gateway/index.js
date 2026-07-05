@@ -1,8 +1,10 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, createSession, upsertSession, getSessionByName, getSessionById, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall } = require('./agent');
+const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle } = require('./agent');
 
 wecom.init(config);
 dbInit(config.dbPath);
@@ -445,6 +447,10 @@ async function bridgeRoute(chatId, userId, output, group, sourceName) {
       touchSession(targetSession.id);
       if (bResult.newSessionId) updateClaudeSessionId(targetSession.id, bResult.newSessionId);
 
+      // 公开记录 B 的 ask 执行
+      recordChronicle(group.project_path, targetName, 'in', `[bridge:ask from @${sourceName}] ${cleanAskMsg}`, 'bridge');
+      recordChronicle(group.project_path, targetName, 'out', bOutput, 'bridge');
+
       // Step 2: 把 B 的回复注入 A，带上下文缝合
       if (sourceUuid && sourceSession) {
         await reply(chatId, userId, `🔗 @${targetName} → @${sourceName} (reply)\n⏳ @${sourceName} 整合中...`);
@@ -463,6 +469,10 @@ ${bOutput.slice(0, 2500)}
         auditLog(chatId, sourceSession.id, 'out', aOutput);
         touchSession(sourceSession.id);
         if (aResult.newSessionId) updateClaudeSessionId(sourceSession.id, aResult.newSessionId);
+
+        // 公开记录 A 收到回复后的整合
+        recordChronicle(group.project_path, sourceName, 'in', `[bridge:reply from @${targetName}]`, 'bridge');
+        recordChronicle(group.project_path, sourceName, 'out', aOutput, 'bridge');
 
         await reply(chatId, userId, `✅ @${sourceName} 完成:\n${aOutput}`);
       } else {
@@ -502,6 +512,10 @@ ${bOutput.slice(0, 2500)}
     auditLog(chatId, targetSession.id, 'out', targetOutput);
     touchSession(targetSession.id);
     if (result.newSessionId) updateClaudeSessionId(targetSession.id, result.newSessionId);
+
+    // 公开记录 B 的 notify 执行
+    recordChronicle(group.project_path, targetName, 'in', `[bridge:notify from @${sourceName}] ${cleanMsg}`, 'bridge');
+    recordChronicle(group.project_path, targetName, 'out', targetOutput, 'bridge');
   } catch (err) {
     await reply(chatId, userId, `❌ Bridge → @${targetName}: ${err.message.slice(0, 300)}`);
   }
@@ -581,6 +595,10 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const fullOutput = result.stdout || result.stderr || '(无输出)';
     const output = fullOutput.slice(0, 3800);
     auditLog(chatId, existingSession?.id || null, 'out', output);
+
+    // 公开记录：写入项目 .bridge/sessions/@name.md
+    recordChronicle(group.project_path, name, 'in', message, 'user');
+    recordChronicle(group.project_path, name, 'out', fullOutput, 'user');
 
     const _s = existingSession || getSessionByName(chatId, name);
     if (_s) {
