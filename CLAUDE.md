@@ -6,11 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目定位
 
-Claude Bridge — 企业微信是连接多个 Claude Code 会话的**消息总线**。
+Claude Bridge — 企业微信是 Claude Code 会话集群的**异步消息总线**。
 
 mote-home 运行 Gateway（24/7 Node.js），通过 Windows Agent HTTP API 在你 Windows 电脑上执行 Claude Code。同一套 session store（`%USERPROFILE%\.claude\`），手机和电脑无缝双向同步。
 
-更深一层：既然你可以通过企微给任意 Claude 会话发消息，任意会话也可以通过 Bridge 回复你，那任意会话之间也能互相通信。企微变成了 Claude 会话的异步协调总线。
+### 四层架构
+
+```
+Git             = 事实层（唯一真相，代码状态）
+共享 md 文件     = 黑板层（会话间共享知识）
+  ├─ CLAUDE.md       — 项目架构 + 技术栈（静态，人维护）
+  ├─ TASK_BOARD.md   — 谁在做什么、哪些文件被锁
+  ├─ BRIDGE_LOG.md   — 每次执行的摘要日志（Gateway 自动追加）
+  └─ REQUIREMENTS.md — 需求清单
+Bridge          = 协调层（会话间通信、事件路由）
+Claude 会话      = 执行层（各司其职的 Worker）
+```
+
+企微不只是远程终端——它是会话集群的异步消息总线。不同专长的 Claude 会话各司其职，通过企微总线异步协调，自动干活直到项目完成。
+
+### 核心约束：会话默认彼此隔离
+
+每个会话有独立的 JSONL，各自积累上下文，**彼此之间完全不知道对方的存在和做过的事**。唯一的共享信息是项目文件夹下的静态 md 文件（黑板层）。会话之间感知彼此的方式：
+- **被动感知**：启动时读黑板层文件（特别是 BRIDGE_LOG.md），了解其他会话做了什么
+- **主动通信**：`@bridge:ask` 呼叫其他会话
 
 ---
 
@@ -91,6 +110,67 @@ Windows (Mote-Office):
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
+
+### 🚧 进行中（v1.7 — 2026-07-05）
+
+**问题 1：Pipe 模式权限确认**（⏸️ 暂缓）
+- 暂缓原因：检测不可靠（纯文本匹配）、状态管理复杂、重跑浪费 token、实际场景极少触发
+
+**会话执行锁（@bridge:ask 的前置条件）** 🔴 优先
+- Gateway 维护会话级 Busy/Idle 状态机
+- 会话执行中标记 Busy，新消息自动入队排队（复用现有离线排队机制）
+- 执行完毕变回 Idle，自动 drain 队列
+- 企微推送排队通知：`📥 消息已排队（会话正忙）`
+
+**@bridge:ask 双向通信**
+- 路由：显式 `[from=<uuid>][to=<uuid>]`，Gateway 纯路由
+  - 机读层：JSONL 文件名 UUID（唯一不变）
+  - 人读层：aiTitle（企微显示）
+- 上下文缝合：Gateway 注入 B 的回复时必须带完整事件帧——
+  ```
+  [ASYNC EVENT] 你在上一轮向 @B 发起了 ask。
+  你的问题是："..."
+  B 的回复如下：...
+  请基于此继续你未完成的任务。
+  ```
+  否则 `--resume` 是全新 inference，A 可能"重新推理"而非"继续"
+- 企微群实时状态推送：`🔗 A→B` / `👤 B 处理中` / `🔗 B→A reply` / `✅ A 完成`
+- 环形依赖检测：A→B→A 时直接报错截断
+
+**BRIDGE_LOG.md — 双层状态文件**
+- 不是逐条 append 的日志，是**工作记忆压缩**，回答"项目现在什么状态"
+- 双层结构：
+  - `CLUSTER_SNAPSHOT`（顶部，Gateway 覆盖写入）— 谁忙谁闲、锁了哪些文件
+  - `RECENT_LOGS`（滚动保留最近 ~15 条摘要）
+- 会话启动**按需感知**：
+  - Level 0（默认）：只读 CLAUDE.md + TASK_BOARD.md
+  - Level 1（用户问进度）：读 BRIDGE_LOG.md
+  - Level 2（debug/冲突）：读原始事件
+- CLAUDE.md 加行为规则：改文件前先 `cat TASK_BOARD.md`，迷茫时 `cat BRIDGE_LOG.md`
+
+**CLAUDE.md 结构化分区**
+- 架构/技术栈区：只读，只有人能改
+- 决策区（DECISIONS）：会话追加，不覆盖已有决策
+- 防止多会话对架构的理解产生"认知分裂"
+
+### 集群协作路线图
+
+**第一层：通信增强（当前）**
+- [ ] 会话执行锁 — Busy/Idle 状态机 + 消息排队
+- [ ] `@bridge:ask` / `@bridge:reply` + 上下文缝合 + 企微状态推送
+- [ ] BRIDGE_LOG.md 双层结构（SNAPSHOT + RECENT_LOGS）
+- [ ] CLAUDE.md 分区（架构只读 / 决策追加）
+
+**第二层：集群协作基础**
+- [ ] TASK_BOARD.md 状态机：status / owner / lease_expire / scope
+- [ ] Agent 原子写入 API（`POST /api/board/update`，文件排它锁）
+- [ ] `@bridge:broadcast` 广播
+
+**第三层：角色分工 + Git 自动化**
+- [ ] Feature branch 自动切
+- [ ] PM/Dev/QA 角色会话
+- [ ] Reviewer 验收流程（2PC）
+- [ ] 全局一致性层（SYSTEM_STATE.md：repo state + active sessions + invariants）
 
 ### 核心限制
 - 电脑上先用 VS Code 创建会话，手机 `--resume` 续接，上下文完全保留

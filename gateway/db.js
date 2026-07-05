@@ -141,6 +141,14 @@ function markTaskProcessed(id) {
     "UPDATE task_queue SET status = 'processed', processed_at = datetime('now') WHERE id = ?"
   ).run(id);
 }
+function getSessionPendingTasks(chatId, sessionId) {
+  return db.prepare(
+    "SELECT * FROM task_queue WHERE chat_id = ? AND session_id = ? AND status = 'pending' ORDER BY created_at"
+  ).all(chatId, sessionId);
+}
+function getSessionById(id) {
+  return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+}
 
 // === Audit ===
 function auditLog(chatId, sessionId, direction, content) {
@@ -171,9 +179,9 @@ function removeGroup(chatId) {
 module.exports = {
   init,
   getGroup, addGroup, removeGroup,
-  getSessionByName, getActiveSessions, listSessions,
+  getSessionByName, getActiveSessions, listSessions, getSessionById,
   createSession, upsertSession, updateClaudeSessionId, touchSession, updateSessionStatus,
-  enqueueTask, getPendingTasks, getAllPendingTasks, markTaskProcessed,
+  enqueueTask, getPendingTasks, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed,
   hideSession, unhideSession, getHiddenSessionIds,
   auditLog,
 };

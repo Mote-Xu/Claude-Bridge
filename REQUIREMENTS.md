@@ -50,12 +50,33 @@
 2. DB 更新后 JS 变量不自动刷新 —— 必须重新查询
 3. 先看数据再看代码 —— 查 JSONL/DB 比猜代码逻辑快
 
-## v2 候选
+## v1.7 进行中（2026-07-05）
 
-- [ ] `@bridge:ask` — 双向通信（B 的回复回传给 A）
+- [ ] ~~Pipe 模式权限确认~~（⏸️ 暂缓）
+- [ ] 🔴 **会话执行锁**（前置条件）— Gateway Busy/Idle 状态机 + 消息排队 + 企微排队通知
+- [ ] `@bridge:ask` / `@bridge:reply` — 双向 RPC + 上下文缝合（ASYNC EVENT 帧）+ 环形依赖检测
+- [ ] 企微群实时状态推送 — `🔗 A→B` / `👤 处理中` / `✅ 完成`
+- [ ] `BRIDGE_LOG.md` 双层结构 — CLUSTER_SNAPSHOT（覆盖写入）+ RECENT_LOGS（滚动 15 条）
+- [ ] 会话启动按需感知 — Level 0 默认（CLAUDE.md+TASK_BOARD）→ Level 1 按需（BRIDGE_LOG）
+- [ ] CLAUDE.md 结构化分区 — 架构区只读 / 决策区追加
+
+## v2 候选（集群协作）
+
+- [ ] TASK_BOARD.md 状态机 — status / owner / lease_expire / scope 字段
+- [ ] Agent CAS 原子认领 API — 同时只有一个会话能认领任务
+- [ ] `@bridge:broadcast` — 广播通知（如"接口已变更"）
+- [ ] Feature branch 自动切 — 认领任务 → `git checkout -b feature/xxx`
+- [ ] 任务 lease 租约 — 过期自动释放，防止会话 crash 永久占用
+
+## v3 候选（角色分工 + 事件驱动）
+
+- [ ] PM/Dev/QA 角色会话
+- [ ] Reviewer 验收流程（2PC：Worker 提交 → Reviewer 合入）
+- [ ] `@bridge:barrier` — 等待多个会话完成再继续
+- [ ] 事件总线 — task_completed / code_merged 事件驱动
+- [ ] Task Auction — 会话竞标任务（bid confidence）
 - [ ] 定时推送（日报/服务器健康）
 - [ ] 流式输出
-- [ ] 企业微信异步客服消息推送
-- [ ] WOL 远程开机
 - [ ] Web Dashboard
-- [ ] Agent 鉴权（X-Auth-Token，Tailscale 隔离下暂时可接受）
+- [ ] WOL 远程开机
+- [ ] Agent 鉴权
