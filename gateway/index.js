@@ -394,8 +394,86 @@ async function handleMessage(chatId, userId, text) {
   await handleSessionMessage(chatId, userId, existing, message, group, sessionName);
 }
 
-// Bridge 路由：解析 @bridge:notify，转发到目标会话
+// 查找目标会话（先 DB，再项目会话列表）
+async function resolveTargetSession(chatId, targetName, group) {
+  let s = getSessionByName(chatId, targetName);
+  if (s) return s;
+  const sessions = await listSessions(group.project_path);
+  const found = sessions.find(s =>
+    (s.name && s.name.includes(targetName)) ||
+    (s.summary && s.summary.includes(targetName))
+  );
+  if (found) {
+    upsertSession(chatId, targetName, 'bridge');
+    updateClaudeSessionId(getSessionByName(chatId, targetName).id, found.id);
+    return getSessionByName(chatId, targetName);
+  }
+  return null;
+}
+
+// Bridge 路由：解析 @bridge:ask / @bridge:notify，转发到目标会话
 async function bridgeRoute(chatId, userId, output, group, sourceName) {
+  // ===== @bridge:ask — 双向通信 =====
+  const askMatch = output.match(/@bridge:ask\s+(\S+)\s+([\s\S]+)/);
+  if (askMatch) {
+    const [, targetName, askMsg] = askMatch;
+    const cleanAskMsg = askMsg.trim();
+    if (!cleanAskMsg) return null;
+
+    const targetSession = await resolveTargetSession(chatId, targetName, group);
+    if (!targetSession) {
+      await reply(chatId, userId, `❌ Bridge: 未找到目标会话 "${targetName}"`);
+      return { handled: true };
+    }
+
+    const sourceSession = getSessionByName(chatId, sourceName);
+    const sourceUuid = sourceSession?.claude_session_id || '';
+
+    await reply(chatId, userId, `🔗 @${sourceName} → @${targetName} (ask)\n⏳ @${targetName} 处理中...`);
+
+    try {
+      // Step 1: 运行目标会话 B
+      const bMessage = `[bridge:from=${sourceName}] ${cleanAskMsg}`;
+      const bResult = await execClaude(
+        targetSession.claude_session_id, bMessage,
+        { cwd: group.project_path }
+      );
+      const bOutput = (bResult.stdout || bResult.stderr || '(无输出)').slice(0, 3000);
+      auditLog(chatId, targetSession.id, 'out', bOutput);
+      touchSession(targetSession.id);
+      if (bResult.newSessionId) updateClaudeSessionId(targetSession.id, bResult.newSessionId);
+
+      // Step 2: 把 B 的回复注入 A，带上下文缝合
+      if (sourceUuid && sourceSession) {
+        await reply(chatId, userId, `🔗 @${targetName} → @${sourceName} (reply)\n⏳ @${sourceName} 整合中...`);
+
+        const aMessage = `[ASYNC EVENT]
+你在上一轮执行中向 @${targetName} 发起了 ask 请求。
+你当时的问题是："${cleanAskMsg.slice(0, 200)}"
+以下是 @${targetName} 的回复：
+---
+${bOutput.slice(0, 2500)}
+---
+请基于上述回复，继续你未完成的任务。`;
+
+        const aResult = await execClaude(sourceUuid, aMessage, { cwd: group.project_path });
+        const aOutput = (aResult.stdout || aResult.stderr || '(无输出)').slice(0, 3800);
+        auditLog(chatId, sourceSession.id, 'out', aOutput);
+        touchSession(sourceSession.id);
+        if (aResult.newSessionId) updateClaudeSessionId(sourceSession.id, aResult.newSessionId);
+
+        await reply(chatId, userId, `✅ @${sourceName} 完成:\n${aOutput}`);
+      } else {
+        // 源会话无 UUID（新创建），直接展示 B 的回复
+        await reply(chatId, userId, `🔗 @${targetName} 回复:\n${bOutput}`);
+      }
+    } catch (err) {
+      await reply(chatId, userId, `❌ Bridge ask → @${targetName}: ${err.message.slice(0, 300)}`);
+    }
+    return { handled: true };
+  }
+
+  // ===== @bridge:notify — 单向通知（现有逻辑） =====
   const match = output.match(/@bridge:notify\s+(\S+)\s+([\s\S]+)/);
   if (!match) return null;
 
@@ -403,20 +481,7 @@ async function bridgeRoute(chatId, userId, output, group, sourceName) {
   const cleanMsg = bridgeMsg.trim();
   if (!cleanMsg) return null;
 
-  // 查目标会话：先 Gateway DB（含已结束的），再扫项目会话列表
-  let targetSession = getSessionByName(chatId, targetName);
-  if (!targetSession) {
-    const sessions = await listSessions(group.project_path);
-    const found = sessions.find(s =>
-      (s.name && s.name.includes(targetName)) ||
-      (s.summary && s.summary.includes(targetName))
-    );
-    if (found) {
-      upsertSession(chatId, targetName, cleanMsg.slice(0, 50));
-      updateClaudeSessionId(getSessionByName(chatId, targetName).id, found.id);
-      targetSession = getSessionByName(chatId, targetName); // 重读，拿到更新后的 claude_session_id
-    }
-  }
+  const targetSession = await resolveTargetSession(chatId, targetName, group);
 
   if (!targetSession) {
     await reply(chatId, userId, `❌ Bridge: 未找到目标会话 "${targetName}"`);
