@@ -235,6 +235,7 @@ app.post('/api/list-sessions', (req, res) => {
       let summary = '';
       let aiTitle = '';
       let hasUserMessage = false;
+      let entrypoint = '';
       let lastActivity = stat.mtimeMs; // 默认用 mtime，之后用 JSONL 里最后时间戳覆盖
       try {
         const content = fs.readFileSync(path.join(dir, f), 'utf-8');
@@ -243,6 +244,7 @@ app.post('/api/list-sessions', (req, res) => {
           try {
             const j = JSON.parse(line);
             if (j.aiTitle) aiTitle = j.aiTitle;
+            if (j.entrypoint && !entrypoint) entrypoint = j.entrypoint;
             if (j.timestamp) {
               const ts = new Date(j.timestamp).getTime();
               if (!isNaN(ts)) lastActivity = ts;
@@ -272,11 +274,13 @@ app.post('/api/list-sessions', (req, res) => {
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary: aiTitle || summary,
-        sortTime: lastActivity, // 按最后一条消息时间排序，不受文件 mtime 影响
+        sortTime: lastActivity,
+        entrypoint: entrypoint,
       });
     }
     // 从 session index 读取标题
     let sessionNames = {};
+  let sessionSources = {};
     try {
       const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
       if (fs.existsSync(sessionsDir)) {
@@ -285,6 +289,7 @@ app.post('/api/list-sessions', (req, res) => {
           try {
             const e = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
             if (e.sessionId && e.name) sessionNames[e.sessionId] = e.name;
+              sessionSources[e.sessionId] = e.name.startsWith('bridge-') ? 'bridge' : 'vscode';
           } catch {}
         }
       }
@@ -292,6 +297,8 @@ app.post('/api/list-sessions', (req, res) => {
 
     for (const s of sessions) {
       if (sessionNames[s.id]) s.name = sessionNames[s.id];
+      // sdk-cli → Bridge pipe 模式创建；claude-vscode → VS Code 原生
+      s.source = (s.entrypoint && s.entrypoint !== 'claude-vscode') ? 'bridge' : 'vscode';
     }
     sessions.sort((a, b) => b.sortTime - a.sortTime); // 降序：新的在前
 

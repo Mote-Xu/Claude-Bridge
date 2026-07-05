@@ -184,7 +184,8 @@ async function handleMessage(chatId, userId, text) {
     if (active.length > 0) {
       msg += '\n\n🟢 活跃中：';
       active.forEach((s, i) => {
-        const title = (s.claude_session_id && titleMap[s.claude_session_id]) || s.session_name;
+        const raw = (s.claude_session_id && titleMap[s.claude_session_id]) || s.session_name;
+	        const title = (raw && raw.startsWith('bridge-')) ? '[Bridge] ' + raw.slice(7) : raw;
         msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)`;
       });
     }
@@ -192,7 +193,8 @@ async function handleMessage(chatId, userId, text) {
       const startIdx = active.length;
       msg += '\n\n💻 历史会话：';
       history.slice(0, 10).forEach((s, i) => {
-        const label = s.summary || s.name || s.date || s.id.slice(0, 8);
+        const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
+	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }
@@ -356,7 +358,8 @@ async function handleMessage(chatId, userId, text) {
       const startIdx = active.length;
       msg += '\n\n💻 电脑历史会话：';
       history.slice(0, 6).forEach((s, i) => {
-        const label = s.summary || s.name || s.date || s.id.slice(0, 8);
+        const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
+	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }
