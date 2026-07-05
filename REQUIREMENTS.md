@@ -53,9 +53,10 @@
 ## v1.7 进行中（2026-07-05）
 
 - [ ] ~~Pipe 模式权限确认~~（⏸️ 暂缓）
-- [ ] 🔴 **会话执行锁**（前置条件）— Gateway Busy/Idle 状态机 + 消息排队 + 企微排队通知
-- [ ] `@bridge:ask` / `@bridge:reply` — 双向 RPC + 上下文缝合（ASYNC EVENT 帧）+ 环形依赖检测
-- [ ] 企微群实时状态推送 — `🔗 A→B` / `👤 处理中` / `✅ 完成`
+- [x] 🔴 **会话执行锁** — Gateway Busy/Idle 状态机 + 消息排队 + 企微排队通知
+- [x] `@bridge:ask` / `@bridge:reply` — 双向 RPC + 上下文缝合（ASYNC EVENT 帧）
+- [x] 企微群实时状态推送 — `🔗 A→B` / `👤 处理中` / `✅ 完成`
+- [x] `.bridge/sessions/@会话名.md` — 每个会话的完整输入输出公开透明
 - [ ] `BRIDGE_LOG.md` 双层结构 — CLUSTER_SNAPSHOT（覆盖写入）+ RECENT_LOGS（滚动 15 条）
 - [ ] 会话启动按需感知 — Level 0 默认（CLAUDE.md+TASK_BOARD）→ Level 1 按需（BRIDGE_LOG）
 - [ ] CLAUDE.md 结构化分区 — 架构区只读 / 决策区追加

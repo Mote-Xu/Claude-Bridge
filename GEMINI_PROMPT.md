@@ -15,11 +15,16 @@
 
 会话执行锁是 `@bridge:ask` 的安全前提，不做就上线会炸。
 
-### 本阶段实现顺序
+### 本阶段实现状态
 
-1. 🔴 会话执行锁（Busy/Idle 状态机 + 消息排队）
-2. `@bridge:ask` / `@bridge:reply`（双向通信 + 上下文缝合 + 企微状态推送）
-3. BRIDGE_LOG.md（双层结构）
+1. ✅ 会话执行锁（Busy/Idle 状态机 + 消息排队）
+2. ✅ `@bridge:ask` / `@bridge:reply`（双向通信 + 上下文缝合 + 企微状态推送）
+3. ✅ `.bridge/sessions/@会话名.md`（每个会话的完整输入输出公开透明）
+4. ⏳ BRIDGE_LOG.md（双层结构：SNAPSHOT + RECENT_LOGS）
+
+### 新洞察：会话公开履历
+
+核心问题：会话之间记忆独立，不能相互访问彼此在干什么。解决方案：Gateway 每次执行完自动往项目目录 `.bridge/sessions/@会话名.md` 追加输入+输出。任何会话 `cat .bridge/sessions/@XXX.md` 即可看到另一个会话的完整干活过程。标注来源（user/bridge），集群里不再有"暗箱会话"。
 
 ---
 

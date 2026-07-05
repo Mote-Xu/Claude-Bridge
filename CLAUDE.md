@@ -30,6 +30,7 @@ Claude 会话      = 执行层（各司其职的 Worker）
 每个会话有独立的 JSONL，各自积累上下文，**彼此之间完全不知道对方的存在和做过的事**。唯一的共享信息是项目文件夹下的静态 md 文件（黑板层）。会话之间感知彼此的方式：
 - **被动感知**：启动时读黑板层文件（特别是 BRIDGE_LOG.md），了解其他会话做了什么
 - **主动通信**：`@bridge:ask` 呼叫其他会话
+- **公开履历**：`.bridge/sessions/@会话名.md` — 每个会话的完整输入输出透明可见
 
 ---
 
@@ -147,6 +148,12 @@ Windows (Mote-Office):
   - Level 1（用户问进度）：读 BRIDGE_LOG.md
   - Level 2（debug/冲突）：读原始事件
 - CLAUDE.md 加行为规则：改文件前先 `cat TASK_BOARD.md`，迷茫时 `cat BRIDGE_LOG.md`
+
+**`.bridge/sessions/@会话名.md` — 会话公开履历**（✅ 已实现）
+- Gateway 每次执行完自动往项目 `.bridge/sessions/@会话名.md` 追加输入+输出
+- 任何会话 `cat .bridge/sessions/@XXX.md` 即可看到另一个会话的完整干活过程
+- 标注来源（user/bridge），bridge 消息显示 `[bridge:ask from @XXX]`
+- 消除"暗箱会话"——集群里每个会话都对团队完全透明
 
 **CLAUDE.md 结构化分区**
 - 架构/技术栈区：只读，只有人能改
