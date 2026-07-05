@@ -57,8 +57,12 @@ Claude Bridge 让你在**手机上通过企业微信**与 Windows 电脑上的 *
 | 🔄 项目管理 | 切换项目、退出项目、重新接入 |
 | 📴 离线排队 | 电脑关机时消息自动排队，开机后定时 drain 重试 |
 | 🔒 Session lock 防护 | 精准关闭目标会话进程，不影响其他会话和 VS Code |
+| 🚦 会话执行锁 | Busy/Idle 状态机 + 消息排队，防止同会话并发撞车 |
 | 🙈 会话管理 | 隐藏/取消隐藏/预览会话，自动读取 VS Code 隐藏列表 |
-| 🔗 会话间通信 | `@bridge:notify` 让不同会话互相发送消息 |
+| 🔗 `@bridge:notify` | 会话间单向通信（A→B→用户） |
+| 🔄 `@bridge:ask` | 会话间双向通信（A→B→A→用户），含上下文缝合 |
+| 📖 会话公开履历 | `.bridge/sessions/@会话名.md` 自动追加输入输出，集群内透明 |
+| 💻 `关vscode` | 远程关闭 VS Code，防止标签页撞 session |
 | ♨️ 热重载 | Agent `/api/reload` 即时生效，VBS 守护 5 秒自动拉起 |
 | 📊 TASK_BOARD | 集群任务板，多会话协作时避免冲突 |
 
@@ -94,16 +98,27 @@ Claude Bridge 让你在**手机上通过企业微信**与 Windows 电脑上的 *
 | `@会话名 done` | 结束会话 |
 | `隐藏 <序号>` / `取消隐藏 <序号>` | 隐藏/恢复会话 |
 | `隐藏列表` / `/hidden` | 查看已隐藏的会话 |
+| `关vscode` / `/kill-vscode` | 手动关闭 VS Code |
 | `帮助` / `/help` | 显示帮助 |
 | 直接发消息 | 发给当前唯一活跃会话 |
 
-### @bridge:notify — 会话间通信
+### @bridge:notify — 会话间单向通信
 
 在 Claude 回复中包含以下指令，Gateway 会拦截并转发给同一项目下的目标会话：
 
 ```
 @bridge:notify <目标会话名> <消息>
 ```
+
+### @bridge:ask — 会话间双向通信
+
+A 问 B 后，B 的回复自动回到 A 继续处理，用户只看最终结果：
+
+```
+@bridge:ask <目标会话名> <消息>
+```
+
+Gateway 自动注入上下文缝合，A 无缝继续。全程在企微推送状态：`🔗 A→B` / `👤 处理中` / `🔗 reply` / `✅ 完成`。
 
 ---
 
@@ -118,10 +133,11 @@ Claude-Bridge/
 │   ├── wecom.js          # 企业微信加解密 + 消息发送
 │   └── config.js         # 配置文件
 ├── agent/
-│   ├── index.js          # Windows Agent Express 服务 (7 个 API)
+│   ├── index.js          # Windows Agent Express 服务 (8 个 API)
 │   ├── start.bat         # 开机自启脚本
 │   ├── start-hidden.vbs  # 后台静默 + VBS 守护循环
 │   └── setup-firewall.bat # 防火墙规则（一次性管理员运行）
+├── .bridge/sessions/     # 会话公开履历（运行时自动生成）
 ├── CLAUDE.md             # 项目上下文（新会话自动加载）
 ├── REQUIREMENTS.md       # 需求与功能清单
 ├── GEMINI_PROMPT.md      # 发给外部 AI 的项目总结
@@ -142,6 +158,7 @@ Claude-Bridge/
 | `POST /api/run-claude` | pipe 执行 `claude.cmd --resume` |
 | `POST /api/session-preview` | 会话详情（话题 + 最近几轮 + 统计） |
 | `GET /api/hidden-sessions` | 读 VS Code state.vscdb 取隐藏会话 |
+| `POST /api/chronicle` | 写会话公开记录到 `.bridge/sessions/@name.md` |
 | `POST /api/reload` | 退出进程（VBS 守护自动拉起 = 热重载） |
 
 ---

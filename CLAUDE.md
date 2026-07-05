@@ -83,7 +83,7 @@ Windows (Mote-Office):
 
 ---
 
-## 当前状态 (v1.5 — 2026-07-05)
+## 当前状态 (v1.7 — 2026-07-05)
 
 ### 已工作
 - 企业微信消息接收/回复
@@ -117,13 +117,13 @@ Windows (Mote-Office):
 **问题 1：Pipe 模式权限确认**（⏸️ 暂缓）
 - 暂缓原因：检测不可靠（纯文本匹配）、状态管理复杂、重跑浪费 token、实际场景极少触发
 
-**会话执行锁（@bridge:ask 的前置条件）** 🔴 优先
+**会话执行锁** ✅
 - Gateway 维护会话级 Busy/Idle 状态机
 - 会话执行中标记 Busy，新消息自动入队排队（复用现有离线排队机制）
 - 执行完毕变回 Idle，自动 drain 队列
 - 企微推送排队通知：`📥 消息已排队（会话正忙）`
 
-**@bridge:ask 双向通信**
+**@bridge:ask 双向通信** ✅
 - 路由：显式 `[from=<uuid>][to=<uuid>]`，Gateway 纯路由
   - 机读层：JSONL 文件名 UUID（唯一不变）
   - 人读层：aiTitle（企微显示）
@@ -138,6 +138,12 @@ Windows (Mote-Office):
 - 企微群实时状态推送：`🔗 A→B` / `👤 B 处理中` / `🔗 B→A reply` / `✅ A 完成`
 - 环形依赖检测：A→B→A 时直接报错截断
 
+**`.bridge/sessions/@会话名.md` — 会话公开履历** ✅
+- Gateway 每次执行完自动往项目 `.bridge/sessions/@会话名.md` 追加输入+输出
+- 任何会话 `cat .bridge/sessions/@XXX.md` 即可看到另一个会话的完整干活过程
+- 标注来源（user/bridge），bridge 消息显示 `[bridge:ask from @XXX]`
+- 消除"暗箱会话"——集群里每个会话都对团队完全透明
+
 **BRIDGE_LOG.md — 双层状态文件**
 - 不是逐条 append 的日志，是**工作记忆压缩**，回答"项目现在什么状态"
 - 双层结构：
@@ -149,12 +155,6 @@ Windows (Mote-Office):
   - Level 2（debug/冲突）：读原始事件
 - CLAUDE.md 加行为规则：改文件前先 `cat TASK_BOARD.md`，迷茫时 `cat BRIDGE_LOG.md`
 
-**`.bridge/sessions/@会话名.md` — 会话公开履历**（✅ 已实现）
-- Gateway 每次执行完自动往项目 `.bridge/sessions/@会话名.md` 追加输入+输出
-- 任何会话 `cat .bridge/sessions/@XXX.md` 即可看到另一个会话的完整干活过程
-- 标注来源（user/bridge），bridge 消息显示 `[bridge:ask from @XXX]`
-- 消除"暗箱会话"——集群里每个会话都对团队完全透明
-
 **CLAUDE.md 结构化分区**
 - 架构/技术栈区：只读，只有人能改
 - 决策区（DECISIONS）：会话追加，不覆盖已有决策
@@ -163,8 +163,9 @@ Windows (Mote-Office):
 ### 集群协作路线图
 
 **第一层：通信增强（当前）**
-- [ ] 会话执行锁 — Busy/Idle 状态机 + 消息排队
-- [ ] `@bridge:ask` / `@bridge:reply` + 上下文缝合 + 企微状态推送
+- [x] 会话执行锁 — Busy/Idle 状态机 + 消息排队
+- [x] `@bridge:ask` / `@bridge:reply` + 上下文缝合 + 企微状态推送
+- [x] `.bridge/sessions/@会话名.md` — 会话公开履历
 - [ ] BRIDGE_LOG.md 双层结构（SNAPSHOT + RECENT_LOGS）
 - [ ] CLAUDE.md 分区（架构只读 / 决策追加）
 

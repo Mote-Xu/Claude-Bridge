@@ -49,6 +49,7 @@
 1. pipe 模式 `content` 是字符串，VS Code 是数组 —— 必须用 `getMessageText()`
 2. DB 更新后 JS 变量不自动刷新 —— 必须重新查询
 3. 先看数据再看代码 —— 查 JSONL/DB 比猜代码逻辑快
+4. 精准关闭 + alreadyIndexed 互斥 —— kill 会话进程后 VS Code 异步清理索引，可能读到旧条目跳过注册。已改为每次必写 + 删旧
 
 ## v1.7 进行中（2026-07-05）
 
