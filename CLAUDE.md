@@ -84,15 +84,24 @@ Windows (Mote-Office):
 - 会话间迁移（项目重命名后批量改 JSONL cwd + 移动文件）
 - list-sessions 不限行数扫描（修复大文件会话漏显）
 - `@bridge:notify` — 会话间通信（Gateway 拦截 → 转发 → 结果返回用户）
-- 精准 session 关闭（替代全局 taskkill，只关目标会话进程）
+- `关vscode` 命令 — 手动关闭 VS Code（企微发指令即关）
 - TASK_BOARD.md 集群任务板（多会话协作时避免冲突）
+- 会话索引自动注册（Bridge 访问过的会话在 VS Code 可见，含 aiTitle 命名）
+- pipe/VS Code 双格式兼容（`getMessageText` 同时支持字符串和数组 content）
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
 
 ### 核心限制
 - 电脑上先用 VS Code 创建会话，手机 `--resume` 续接，上下文完全保留
-- 手机发消息会关 VS Code 窗口，回电脑重开 VS Code 自动恢复所有会话
+- 企微发消息不关 VS Code 标签页；发 `关vscode` 手动全关，重开自动恢复
+
+### ⚠️ 已知陷阱（2026-07-05 踩坑记录）
+
+1. **pipe 模式的 JSONL 格式不同** — `content` 是字符串 `"hello"`，不是数组 `[{text:"hello"}]`。所有读 JSONL 的代码必须兼容两种格式（用 `getMessageText()`）。
+2. **DB 更新后变量不自动刷新** — `updateClaudeSessionId()` 改了 SQLite 但 JS 对象还是旧值。更新 DB 后必须重新 `getSessionByName()` 取最新数据。
+3. **精准关闭 + alreadyIndexed 互斥** — kill 会话进程后 VS Code 异步清理索引，检查 `alreadyIndexed` 可能读到旧条目然后跳过注册。现已改为每次必写 + 删旧。
+4. **先看数据再看代码** — 遇到 bug 不要猜代码逻辑，先 `Read` JSONL/DB 看看实际数据是什么。
 
 ### 🆕 新洞察：Bridge = 会话间通信总线
 - Gateway 已在中间，双向都能走消息
@@ -129,6 +138,8 @@ agent/
   start.bat         — 开机自启脚本
   start-hidden.vbs  — 后台静默启动 + VBS 守护循环
   setup-firewall.bat — 防火墙规则（一次性管理员运行）
+
+README.md           — 项目 README（架构、功能、使用、部署）
 ```
 
 ---

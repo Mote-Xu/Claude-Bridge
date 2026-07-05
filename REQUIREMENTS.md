@@ -30,11 +30,29 @@
 
 ## v1 已知限制
 
-- [ ] 手机新建会话在 VS Code 可见（pipe 模式天生限制，先电脑创建再手机续接可规避）
+- [x] Bridge 访问过的会话在 VS Code 可见（Agent 自动写索引条目）
+- [x] pipe/VS Code 双格式兼容（`getMessageText` 统一处理）
+
+## v1.6 已完成（2026-07-05）
+
+- [x] `@bridge:notify` — 会话间通信 MVP（Gateway 拦截 + 转发）
+- [x] 精准 session close（替代 taskkill 全杀）
+- [x] Session 索引自动注册（每次必写，唯一文件名，aiTitle 命名）
+- [x] `upsertSession` — 防重复 DB 条目
+- [x] `getMessageText()` — pipe/VS Code 双格式兼容
+- [x] list-sessions 不限行数 + session-preview 双格式
+- [x] Clawd → Claude-Bridge 全量重命名（代码/server/systemd/DB）
+- [x] TASK_BOARD.md 集群协作机制
+
+## ⚠️ 已知陷阱（2026-07-05）
+
+1. pipe 模式 `content` 是字符串，VS Code 是数组 —— 必须用 `getMessageText()`
+2. DB 更新后 JS 变量不自动刷新 —— 必须重新查询
+3. 先看数据再看代码 —— 查 JSONL/DB 比猜代码逻辑快
 
 ## v2 候选
 
-- [ ] 会话间通信（Claude 会话通过 Bridge 互发消息，企微变消息总线）
+- [ ] `@bridge:ask` — 双向通信（B 的回复回传给 A）
 - [ ] 定时推送（日报/服务器健康）
 - [ ] 流式输出
 - [ ] 企业微信异步客服消息推送

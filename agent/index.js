@@ -21,6 +21,14 @@ function encodeProject(projectPath) {
   return projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
 }
 
+// 兼容两种消息格式：VS Code 的数组格式和 pipe 模式的字符串格式
+function getMessageText(msg) {
+  if (!msg || !msg.content) return null;
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content) && msg.content[0]?.text) return msg.content[0].text;
+  return null;
+}
+
 // ========== API ==========
 
 // GET /api/health
@@ -101,47 +109,25 @@ app.post('/api/run-claude', (req, res) => {
     // Step 1: 直接写文件（本地无编码问题）
     fs.writeFileSync(msgFile, message, 'utf-8');
 
-    // Step 2: 精准关闭目标会话（只关这一个，不动其他会话和 VS Code）
+    // Step 2: 注册会话到 Claude Code 索引（--resume 查索引不查文件）
     if (sessionId) {
       try {
-        const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
-        if (fs.existsSync(sessionsDir)) {
-          for (const f of fs.readdirSync(sessionsDir)) {
-            if (!f.endsWith('.json')) continue;
-            try {
-              const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
-              if (entry.sessionId === sessionId) {
-                const targetPid = parseInt(f.replace('.json', ''));
-                if (targetPid && targetPid > 0) {
-                  execSync(`taskkill /f /pid ${targetPid}`, { timeout: 5000, windowsHide: true });
-                  execSync(`timeout /t 1 /nobreak >nul`, { timeout: 2000, windowsHide: true });
-                }
-                break;
-              }
-            } catch {}
+        if (cwd) {
+          const sessionsDir2 = path.join(os.homedir(), '.claude', 'sessions');
+          // 删掉该会话的旧索引条目（避免重复）
+          if (fs.existsSync(sessionsDir2)) {
+            for (const f of fs.readdirSync(sessionsDir2)) {
+              if (!f.endsWith('.json')) continue;
+              try {
+                const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir2, f), 'utf-8'));
+                if (entry.sessionId === sessionId) fs.unlinkSync(path.join(sessionsDir2, f));
+              } catch {}
+            }
           }
-        }
-      } catch {} // 会话未在 VS Code 中打开，无需关闭
-
-      // 注册会话到 Claude Code 索引（--resume 查索引不查文件）
-      try {
-        // 检查是否已在索引中
-        let alreadyIndexed = false;
-        if (fs.existsSync(sessionsDir)) {
-          for (const f of fs.readdirSync(sessionsDir)) {
-            if (!f.endsWith('.json')) continue;
-            try {
-              const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf-8'));
-              if (entry.sessionId === sessionId) { alreadyIndexed = true; break; }
-            } catch {}
-          }
-        }
-        // 不在索引 → 注册
-        if (!alreadyIndexed && cwd) {
           // 从 JSONL 里取元数据
           const encoded = encodeProject(cwd);
           const projDir = path.join(PROJECTS_DIR, encoded);
-          let version = '2.1.198', startedAt = Date.now(), entrypoint = 'claude-vscode';
+          let version = '2.1.198', startedAt = Date.now(), entrypoint = 'claude-vscode', aiTitle = '';
           if (fs.existsSync(projDir)) {
             const jsonlFile = path.join(projDir, `${sessionId}.jsonl`);
             if (fs.existsSync(jsonlFile)) {
@@ -154,13 +140,14 @@ app.post('/api/run-claude', (req, res) => {
                     if (j.version) version = j.version;
                     if (j.timestamp) startedAt = new Date(j.timestamp).getTime();
                     if (j.entrypoint) entrypoint = j.entrypoint;
+                    if (j.aiTitle) aiTitle = j.aiTitle;
                   } catch {}
                 }
               } catch {}
             }
           }
-          // 写入索引
-          if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
+          // 写入索引（唯一文件名：agentPID-sessionShort）
+          if (!fs.existsSync(sessionsDir2)) fs.mkdirSync(sessionsDir2, { recursive: true });
           const indexEntry = {
             pid: process.pid,
             sessionId,
@@ -170,10 +157,10 @@ app.post('/api/run-claude', (req, res) => {
             peerProtocol: 1,
             kind: 'interactive',
             entrypoint,
-            name: `bridge-${sessionId.slice(0, 8)}`,
+            name: aiTitle ? `bridge-${aiTitle.slice(0, 30)}` : `bridge-${sessionId.slice(0, 8)}`,
             nameSource: 'derived',
           };
-          const indexFile = path.join(sessionsDir, `${process.pid}.json`);
+          const indexFile = path.join(sessionsDir2, `${process.pid}-${sessionId.slice(0, 8)}.json`);
           fs.writeFileSync(indexFile, JSON.stringify(indexEntry), 'utf-8');
         }
       } catch {} // 索引注册失败不阻塞
@@ -181,7 +168,7 @@ app.post('/api/run-claude', (req, res) => {
 
     // Step 3: 写 bat 文件执行 Claude（避免 cmd 引号嵌套）
     // CI=true 可能让 Claude CLI 以非交互模式创建会话，VS Code 更可能识别
-    const lines = ['@echo off', 'set CI=true', 'set CLAUDE_NO_TUI=1'];
+    const lines = ['@echo off', 'set CLAUDE_NO_TUI=1'];
     if (cwd) lines.push(`cd /d "${cwd}"`);
     lines.push(`type "${msgFile}" | "${CLAUDE_BIN}"${sessionId ? ` --resume "${sessionId}"` : ''}`);
     fs.writeFileSync(batFile, lines.join('\r\n') + '\r\n', 'utf-8');
@@ -261,8 +248,9 @@ app.post('/api/list-sessions', (req, res) => {
               if (!isNaN(ts)) lastActivity = ts;
             }
             // 搜索第一条有效用户消息（不限行数，前面的 IDE 事件会跳过）
-            if (!hasUserMessage && j.type === 'user' && j.message?.content?.[0]?.text) {
-              const text = j.message.content[0].text;
+            if (!hasUserMessage && j.type === 'user') {
+              const text = getMessageText(j.message);
+              if (!text) continue;
               if (/^<[a-z_]+>/.test(text)) continue; // 跳过 IDE 事件
               let displayText = text;
               if (text.startsWith('Base directory for')) {
@@ -276,8 +264,10 @@ app.post('/api/list-sessions', (req, res) => {
           } catch {}
         }
       } catch {} // 读文件失败不阻塞
-      // 跳过空会话（VS Code 自动创建，没有用户消息）
+      // 跳过空会话或无意义短消息
       if (!hasUserMessage) continue;
+      const bestSummary = aiTitle || summary;
+      if (!bestSummary || bestSummary.length < 5) continue; // hello / 乱码 等
       sessions.push({
         id: f.replace('.jsonl', ''),
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
@@ -359,8 +349,9 @@ app.post('/api/session-preview', (req, res) => {
     for (const line of lines) {
       try {
         const j = JSON.parse(line);
-        if (j.type === 'user' && j.message?.content?.[0]?.text) {
-          const text = j.message.content[0].text;
+        if (j.type === 'user') {
+          const text = getMessageText(j.message);
+          if (!text) continue;
           if (/^<[a-z_]+>/.test(text)) continue; // IDE 事件
           let displayText = text;
           if (text.startsWith('Base directory for')) {
@@ -371,9 +362,10 @@ app.post('/api/session-preview', (req, res) => {
           if (displayText.length >= 10) allUserMsgs.push(displayText);
           rounds.push({ user: displayText, assistant: '' }); // 用户消息立即建轮次
         }
-        if (j.type === 'assistant' && j.message?.content?.[0]?.text) {
+        if (j.type === 'assistant') {
+          const text = getMessageText(j.message);
+          if (!text) continue;
           assistantCount++;
-          const text = j.message.content[0].text;
           // 填入最后一个未配对的轮次
           for (let i = rounds.length - 1; i >= 0; i--) {
             if (!rounds[i].assistant) { rounds[i].assistant = text; break; }
@@ -427,6 +419,16 @@ app.post('/api/session-preview', (req, res) => {
 app.post('/api/reload', (req, res) => {
   res.json({ status: 'restarting' });
   setTimeout(() => process.exit(0), 100);
+});
+
+// POST /api/kill-vscode — 手动关闭 VS Code
+app.post('/api/kill-vscode', (req, res) => {
+  try {
+    execSync('taskkill /f /im code.exe', { timeout: 5000, windowsHide: true });
+    res.json({ status: 'ok' });
+  } catch {
+    res.json({ status: 'not_running' });
+  }
 });
 
 // GET /api/hidden-sessions — 从 VS Code 状态读取被隐藏的会话 ID

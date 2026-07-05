@@ -1,6 +1,6 @@
 const express = require('express');
 const config = require('./config');
-const { init: dbInit, getGroup, addGroup, removeGroup, createSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
+const { init: dbInit, getGroup, addGroup, removeGroup, createSession, upsertSession, getSessionByName, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
 const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall } = require('./agent');
 
@@ -72,6 +72,7 @@ async function handleMessage(chatId, userId, text) {
       '  @会话名 done — 结束会话\n' +
       '  隐藏 <序号> / 取消隐藏 <序号> — 隐藏/恢复会话\n' +
       '  隐藏列表 / /hidden — 查看已隐藏的会话\n' +
+      '  关vscode / /kill-vscode — 手动关闭 VS Code\n' +
       '  直接发消息 — 发给当前活跃会话'
     );
     return;
@@ -197,6 +198,17 @@ async function handleMessage(chatId, userId, text) {
     }
     msg += '\n\n回复序号切换会话，或直接发消息';
     await reply(chatId, userId, msg);
+    return;
+  }
+
+  // 关 VS Code
+  if (trimmed === '关vscode' || trimmed === '/kill-vscode') {
+    try {
+      await agentCall('POST', '/api/kill-vscode', {}, 5000);
+      await reply(chatId, userId, '💻 VS Code 已关闭。下次重开会自动恢复所有会话。');
+    } catch {
+      await reply(chatId, userId, '❌ 关闭 VS Code 失败（电脑离线或 Agent 不可用）');
+    }
     return;
   }
 
@@ -380,7 +392,7 @@ async function bridgeRoute(chatId, userId, output, group, sourceName) {
   const cleanMsg = bridgeMsg.trim();
   if (!cleanMsg) return null;
 
-  // 查目标会话：先 Gateway DB，再扫项目会话列表
+  // 查目标会话：先 Gateway DB（含已结束的），再扫项目会话列表
   let targetSession = getSessionByName(chatId, targetName);
   if (!targetSession) {
     const sessions = await listSessions(group.project_path);
@@ -389,9 +401,9 @@ async function bridgeRoute(chatId, userId, output, group, sourceName) {
       (s.summary && s.summary.includes(targetName))
     );
     if (found) {
-      createSession(chatId, targetName, cleanMsg.slice(0, 50));
-      targetSession = getSessionByName(chatId, targetName);
-      if (targetSession) updateClaudeSessionId(targetSession.id, found.id);
+      upsertSession(chatId, targetName, cleanMsg.slice(0, 50));
+      updateClaudeSessionId(getSessionByName(chatId, targetName).id, found.id);
+      targetSession = getSessionByName(chatId, targetName); // 重读，拿到更新后的 claude_session_id
     }
   }
 

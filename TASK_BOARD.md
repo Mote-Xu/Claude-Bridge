@@ -14,8 +14,6 @@
 
 | 模块 | 任务 | 建议负责人 |
 |------|------|-----------|
-| README | 写项目 README | — |
-
 ## ✅ 已完成
 
 | 模块 | 任务 | 完成者 |
@@ -24,3 +22,4 @@
 | gateway/index.js | @bridge:notify MVP | @架构 |
 | 文档同步 | 同步 CLAUDE.md / REQUIREMENTS.md / GEMINI_PROMPT.md | @架构 |
 | 全局 CLAUDE.md | 更新集群协作规则（删 taskkill 旧描述） | @架构 |
+| README | 写项目 README | @Mote |

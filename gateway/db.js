@@ -68,8 +68,28 @@ function addGroup(chatId, projectName, projectPath) {
 // === Sessions ===
 function getSessionByName(chatId, sessionName) {
   return db.prepare(
-    "SELECT * FROM sessions WHERE chat_id = ? AND session_name = ? AND status != 'ended'"
+    "SELECT * FROM sessions WHERE chat_id = ? AND session_name = ? AND status != 'ended' ORDER BY last_active DESC LIMIT 1"
   ).get(chatId, sessionName);
+}
+
+// 创建或复用会话（避免重复）
+function upsertSession(chatId, sessionName, firstMessage) {
+  const existing = db.prepare(
+    "SELECT * FROM sessions WHERE chat_id = ? AND session_name = ?"
+  ).get(chatId, sessionName);
+  if (existing) {
+    // 只保留一个活跃会话——先结束其他所有活跃
+    db.prepare("UPDATE sessions SET status = 'ended' WHERE chat_id = ? AND status != 'ended' AND id != ?")
+      .run(chatId, existing.id);
+    // 复用已有条目，重置为 active
+    db.prepare("UPDATE sessions SET status = 'active', last_active = datetime('now') WHERE id = ?")
+      .run(existing.id);
+    return existing;
+  }
+  // 新建前也先结束其他活跃
+  db.prepare("UPDATE sessions SET status = 'ended' WHERE chat_id = ? AND status != 'ended'")
+    .run(chatId);
+  return createSession(chatId, sessionName, firstMessage);
 }
 function getActiveSessions(chatId) {
   return db.prepare(
@@ -152,7 +172,7 @@ module.exports = {
   init,
   getGroup, addGroup, removeGroup,
   getSessionByName, getActiveSessions, listSessions,
-  createSession, updateClaudeSessionId, touchSession, updateSessionStatus,
+  createSession, upsertSession, updateClaudeSessionId, touchSession, updateSessionStatus,
   enqueueTask, getPendingTasks, getAllPendingTasks, markTaskProcessed,
   hideSession, unhideSession, getHiddenSessionIds,
   auditLog,
