@@ -168,7 +168,7 @@ app.post('/api/run-claude', (req, res) => {
 
     // Step 3: 写 bat 文件执行 Claude（避免 cmd 引号嵌套）
     // CI=true 可能让 Claude CLI 以非交互模式创建会话，VS Code 更可能识别
-    const lines = ['@echo off', 'set CLAUDE_NO_TUI=1'];
+    const lines = ['@echo off', 'set CI=true', 'set CLAUDE_NO_TUI=1'];
     if (cwd) lines.push(`cd /d "${cwd}"`);
     lines.push(`type "${msgFile}" | "${CLAUDE_BIN}"${sessionId ? ` --resume "${sessionId}"` : ''}`);
     fs.writeFileSync(batFile, lines.join('\r\n') + '\r\n', 'utf-8');
