@@ -274,7 +274,8 @@ async function handleMessage(chatId, userId, text) {
         if (history.length > 0) {
           msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
           history.slice(0, 8).forEach((s, i) => {
-            const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
+            const rawLabel = s.summary ? s.summary.slice(0, 30) : s.date || '';
+            const label = s.source === 'bridge' ? '[Bridge] ' + rawLabel : rawLabel;
             msg += `\n  ${i + 1}. ${label}`;
           });
           msg += '\n\n或 @会话名 <消息> 新建会话';
@@ -295,7 +296,8 @@ async function handleMessage(chatId, userId, text) {
       if (history.length > 0) {
         msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
         history.slice(0, 8).forEach((s, i) => {
-          const label = s.summary ? s.summary.slice(0, 30) : s.date || '';
+          const rawLabel = s.summary ? s.summary.slice(0, 30) : s.date || '';
+          const label = s.source === 'bridge' ? '[Bridge] ' + rawLabel : rawLabel;
           msg += `\n  ${i + 1}. ${label}`;
         });
         msg += '\n\n或 @会话名 <消息> 新建会话';
