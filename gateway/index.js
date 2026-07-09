@@ -4,7 +4,7 @@ const path = require('path');
 const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, createSession, upsertSession, getSessionByName, getSessionById, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
-const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle } = require('./agent');
+const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle, syncChronicles } = require('./agent');
 
 wecom.init(config);
 dbInit(config.dbPath);
@@ -704,5 +704,15 @@ async function drainPendingTasks() {
   }
 }
 setInterval(drainPendingTasks, 30000);
+
+// 定期扫描 VS Code 创建的会话，写入 chronicle
+async function syncAllChronicles() {
+  try {
+    const n = await syncChronicles();
+    if (n > 0) console.log(`Chronicle sync: ${n} new entries`);
+  } catch {}
+}
+setInterval(syncAllChronicles, 60000);
+syncAllChronicles(); // 启动时立即跑一次
 
 app.listen(config.port, '127.0.0.1', () => console.log(`Claude-Bridge Gateway on 127.0.0.1:${config.port}`));

@@ -434,18 +434,103 @@ app.post('/api/chronicle', (req, res) => {
   if (!projectPath || !sessionName || !content) return res.status(400).json({ error: 'projectPath, sessionName, content required' });
 
   try {
-    const chronicleDir = path.join(projectPath, '.bridge', 'sessions');
-    if (!fs.existsSync(chronicleDir)) fs.mkdirSync(chronicleDir, { recursive: true });
-
-    const file = path.join(chronicleDir, `@${sessionName}.md`);
-    const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const sourceLabel = source ? ` [${source}]` : '';
-    const typeIcon = type === 'in' ? '👤' : '🤖';
-
-    let entry = `\n## ${ts}${sourceLabel}\n${typeIcon}: ${content.slice(0, 2000)}\n`;
-    fs.appendFileSync(file, entry, 'utf-8');
-
+    writeChronicle(projectPath, sessionName, type, content, source);
     res.json({ status: 'ok' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 写入 chronicle 文件（也供 sync 使用）
+function writeChronicle(projectPath, sessionName, type, content, source) {
+  const chronicleDir = path.join(projectPath, '.bridge', 'sessions');
+  if (!fs.existsSync(chronicleDir)) fs.mkdirSync(chronicleDir, { recursive: true });
+
+  const file = path.join(chronicleDir, `@${sessionName}.md`);
+  const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const sourceLabel = source ? ` [${source}]` : '';
+  const typeIcon = type === 'in' ? '👤' : '🤖';
+
+  const entry = `\n## ${ts}${sourceLabel}\n${typeIcon}: ${content.slice(0, 2000)}\n`;
+  fs.appendFileSync(file, entry, 'utf-8');
+}
+
+// 从 JSONL 读取会话名和项目路径
+function getSessionMeta(jsonlPath, sessionId) {
+  let projectPath = null, sessionName = null;
+  try {
+    const content = fs.readFileSync(jsonlPath, 'utf-8');
+    const lines = content.split('\n').slice(0, 30);
+    for (const line of lines) {
+      try {
+        const j = JSON.parse(line);
+        if (j.cwd) projectPath = j.cwd.replace(/\\\\/g, '\\');
+        if (j.aiTitle && !sessionName) sessionName = j.aiTitle;
+      } catch {}
+    }
+  } catch {}
+  return { projectPath, sessionName: sessionName || sessionId.slice(0, 8) };
+}
+
+// 同步所有项目的 JSONL → chronicle（覆盖 VS Code 和 Bridge 会话）
+const TRACK_FILE = path.join(os.homedir(), '.claude', '.chronicle-sync.json');
+function syncChronicles() {
+  if (!fs.existsSync(PROJECTS_DIR)) return { synced: 0 };
+
+  let track = {};
+  try { track = JSON.parse(fs.readFileSync(TRACK_FILE, 'utf-8')); } catch {}
+
+  let synced = 0;
+  const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+
+  for (const dir of dirs) {
+    let jsonls;
+    try { jsonls = fs.readdirSync(path.join(PROJECTS_DIR, dir.name)).filter(f => f.endsWith('.jsonl')); }
+    catch { continue; }
+
+    for (const f of jsonls) {
+      const sessionId = f.replace('.jsonl', '');
+      const jsonlPath = path.join(PROJECTS_DIR, dir.name, f);
+      const lastLineCount = track[sessionId] || 0;
+
+      let content;
+      try { content = fs.readFileSync(jsonlPath, 'utf-8'); } catch { continue; }
+      const lines = content.split('\n').filter(Boolean);
+      const currentLineCount = lines.length;
+      if (currentLineCount <= lastLineCount) continue; // 无新行
+
+      const meta = getSessionMeta(jsonlPath, sessionId);
+      if (!meta.projectPath) continue;
+
+      // 处理新行
+      for (let i = lastLineCount; i < currentLineCount; i++) {
+        try {
+          const j = JSON.parse(lines[i]);
+          const text = getMessageText(j.message);
+          if (!text) continue;
+          if (j.type === 'user' && /^<[a-z_]+>/.test(text)) continue; // IDE 事件跳过
+
+          const type = j.type === 'user' ? 'in' : (j.type === 'assistant' ? 'out' : null);
+          if (!type) continue;
+
+          writeChronicle(meta.projectPath, meta.sessionName, type, text, '');
+          synced++;
+        } catch {}
+      }
+
+      track[sessionId] = currentLineCount;
+    }
+  }
+
+  try { fs.writeFileSync(TRACK_FILE, JSON.stringify(track), 'utf-8'); } catch {}
+  return { synced };
+}
+
+// POST /api/sync-chronicles — 扫描并同步所有会话
+app.post('/api/sync-chronicles', (req, res) => {
+  try {
+    const result = syncChronicles();
+    res.json({ status: 'ok', ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

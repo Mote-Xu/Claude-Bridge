@@ -68,11 +68,19 @@ async function getSessionIds(projectPath) {
 async function recordChronicle(projectPath, sessionName, type, content, source) {
   try {
     await agentCall('POST', '/api/chronicle', { projectPath, sessionName, type, content, source }, 5000);
-  } catch {} // 静默失败，不阻塞主流程
+  } catch {} // 静默失败
+}
+
+// 触发 Agent 扫描 JSONL → chronicle（覆盖 VS Code 会话）
+async function syncChronicles() {
+  try {
+    const res = await agentCall('POST', '/api/sync-chronicles', null, 15000);
+    return res.synced || 0;
+  } catch { return 0; }
 }
 
 async function reloadAgent() {
   try { await agentCall('POST', '/api/reload', null, 5000); return true; } catch { return false; }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, recordChronicle, reloadAgent };
+module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, recordChronicle, syncChronicles, reloadAgent };
