@@ -4,3 +4,4 @@ bridge.db
 *.log
 /tmp/
 PRIVATE.md
+.bridge/
