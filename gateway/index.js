@@ -84,7 +84,10 @@ async function handleMessage(chatId, userId, text) {
         await reply(chatId, userId, '⚪ 当前没有会话正在执行。');
       } else {
         let msg = `🔄 ${busy.length} 个会话正在执行：`;
-        for (const s of busy) msg += `\n  · ${s.name} (${s.id.slice(0, 8)})`;
+        for (const s of busy) {
+          const proj = s.project ? `[${s.project}] ` : '';
+          msg += `\n  · ${proj}${s.name}`;
+        }
         await reply(chatId, userId, msg);
       }
     } catch {

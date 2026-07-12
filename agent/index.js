@@ -664,7 +664,8 @@ app.get('/api/busy-sessions', (req, res) => {
             const stat = fs.statSync(jsonlPath);
             if (now - stat.mtimeMs > BUSY_THRESHOLD_MS) continue;
             const meta = getSessionMeta(jsonlPath, sid);
-            busyList.push({ id: sid, name: meta.sessionName || sid.slice(0, 8) });
+            const projectName = meta.projectPath ? meta.projectPath.split('\\').filter(Boolean).pop() : '';
+            busyList.push({ id: sid, name: meta.sessionName || sid.slice(0, 8), project: projectName });
           }
         } catch {}
       }
