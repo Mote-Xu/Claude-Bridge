@@ -642,27 +642,37 @@ app.post('/api/sync-chronicles', async (req, res) => {
   }
 });
 
-// GET /api/busy-sessions — 查询当前正在执行的会话
+// GET /api/busy-sessions — 通过 JSONL 修改时间判断会话是否正在执行
+// JSONL 持续写入 = 正在干活；超过 30 秒没写入 = 空闲
+const BUSY_THRESHOLD_MS = 30000;
 app.get('/api/busy-sessions', (req, res) => {
-  const busyList = [];
-  for (const sid of sessionBusy) {
-    // 找这个 session 的 aiTitle
-    let name = sid.slice(0, 8);
+  try {
+    const now = Date.now();
+    const allSids = new Set();
+    for (const sid of sessionBusy) allSids.add(sid); // Agent 自己驱动的
+
+    const busyList = [];
     if (fs.existsSync(PROJECTS_DIR)) {
       for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
         if (!d.isDirectory()) continue;
-        const f = path.join(PROJECTS_DIR, d.name, `${sid}.jsonl`);
-        if (!fs.existsSync(f)) continue;
         try {
-          const meta = getSessionMeta(f, sid);
-          name = meta.sessionName || name;
+          for (const f of fs.readdirSync(path.join(PROJECTS_DIR, d.name))) {
+            if (!f.endsWith('.jsonl')) continue;
+            const sid = f.replace('.jsonl', '');
+            const jsonlPath = path.join(PROJECTS_DIR, d.name, f);
+            // JSONL 最近 30 秒内被修改 = 正在写入 = 忙
+            const stat = fs.statSync(jsonlPath);
+            if (now - stat.mtimeMs > BUSY_THRESHOLD_MS) continue;
+            const meta = getSessionMeta(jsonlPath, sid);
+            busyList.push({ id: sid, name: meta.sessionName || sid.slice(0, 8) });
+          }
         } catch {}
-        break;
       }
     }
-    busyList.push({ id: sid, name });
+    res.json({ busy: busyList, count: busyList.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json({ busy: busyList, count: busyList.length });
 });
 
 // POST /api/bridge/ask — 会话给会话发消息的标准入口
