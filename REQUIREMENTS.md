@@ -58,6 +58,7 @@
 - [x] `@bridge:ask` / `@bridge:reply` — 双向 RPC + 上下文缝合（ASYNC EVENT 帧）
 - [x] 企微群实时状态推送 — `🔗 A→B` / `👤 处理中` / `✅ 完成`
 - [x] `.bridge/sessions/@会话名.md` — 每个会话的完整输入输出公开透明
+- [x] `/status` / `状态` — 查询当前正在执行的会话（JSONL mtime 30s + Agent busy）
 - [ ] `BRIDGE_LOG.md` 双层结构 — CLUSTER_SNAPSHOT（覆盖写入）+ RECENT_LOGS（滚动 15 条）
 - [ ] 会话启动按需感知 — Level 0 默认（CLAUDE.md+TASK_BOARD）→ Level 1 按需（BRIDGE_LOG）
 - [ ] CLAUDE.md 结构化分区 — 架构区只读 / 决策区追加

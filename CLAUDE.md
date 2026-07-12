@@ -99,7 +99,7 @@ Windows (Mote-Office):
 
 ---
 
-## 当前状态 (v1.7 — 2026-07-05)
+## 当前状态 (v1.7 — 2026-07-12)
 
 ### 已工作
 - 企业微信消息接收/回复
@@ -124,6 +124,10 @@ Windows (Mote-Office):
 - TASK_BOARD.md 集群任务板（多会话协作时避免冲突）
 - 会话索引自动注册（Bridge 访问过的会话在 VS Code 可见，含 aiTitle 命名）
 - pipe/VS Code 双格式兼容（`getMessageText` 同时支持字符串和数组 content）
+- `/api/bridge/ask` — 对称会话间通信 API（发起/回复同一接口，来源标注、企微可见）
+- 会话执行锁（Busy/Idle 状态机 + 消息排队）
+- `.bridge/sessions/@会话名.md` — 会话公开履历（Agent 同步所有 JSONL）
+- `/status` / `状态` — 查询当前正在执行的会话（JSONL mtime + Agent busy）
 - CAST_OF_SESSIONS.md 会话角色名册（项目根，gitignore）— 分清谁是主线 worker / 谁是留档 auditor / 谁是墓碑 retired
   - 交互会话：全局 SessionStart hook（`~/.claude/hooks/cast-of-sessions.js`）建文件 + 提醒会话自登记（源=交互）
   - Bridge 会话：Agent `run-claude` 汇合点 `upsertCastBridge()` 机械登记（源=🌉 Bridge），不靠 hook 在 pipe 模式触发
@@ -133,7 +137,7 @@ Windows (Mote-Office):
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
 
-### 🚧 进行中（v1.7 — 2026-07-05）
+### 🚧 进行中（v1.7 — 2026-07-12）
 
 **问题 1：Pipe 模式权限确认**（⏸️ 暂缓）
 - 暂缓原因：检测不可靠（纯文本匹配）、状态管理复杂、重跑浪费 token、实际场景极少触发

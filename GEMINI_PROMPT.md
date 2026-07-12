@@ -18,11 +18,20 @@
 ### 本阶段实现状态
 
 1. ✅ 会话执行锁（Busy/Idle 状态机 + 消息排队）
-2. ✅ `@bridge:ask` / `@bridge:reply`（双向通信 + 上下文缝合 + 企微状态推送）
+2. ✅ `/api/bridge/ask` — 对称会话间通信 API（发起和回复走同一接口）
 3. ✅ `.bridge/sessions/@会话名.md`（每个会话的完整输入输出公开透明）
-4. ⏳ BRIDGE_LOG.md（双层结构：SNAPSHOT + RECENT_LOGS）
+4. ✅ `/status` / `状态` — 查询会话执行状态（JSONL mtime + Agent busy）
+5. ✅ VS Code = 企微零区别（任何会话均可通过 API 自主通信）
+6. ✅ 已在 MemeticChaos 项目实测验证：worker + auditor 双会话自主协同
+7. ⏳ BRIDGE_LOG.md（双层结构：SNAPSHOT + RECENT_LOGS）
 
-### 新洞察：会话公开履历
+### 已验证：会话间通信模型
+
+- **对称 API**：`POST /api/bridge/ask`，发起和回复是同一操作
+- **来源标注**：`[bridge:from=会话名]` 前缀，接收方知道是谁发的
+- **Fire-and-die**：调完立刻返回（结束本轮），对方回复自动唤醒
+- **企微可见**：每次会话间通信在企微推送状态
+- **VS Code = 企微**：任何会话无论怎么被驱动，都能自主调 API
 
 核心问题：会话之间记忆独立，不能相互访问彼此在干什么。解决方案：Gateway 每次执行完自动往项目目录 `.bridge/sessions/@会话名.md` 追加输入+输出。任何会话 `cat .bridge/sessions/@XXX.md` 即可看到另一个会话的完整干活过程。标注来源（user/bridge），集群里不再有"暗箱会话"。
 
