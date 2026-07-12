@@ -503,8 +503,9 @@ ${bOutput.slice(0, 2500)}
   await reply(chatId, userId, `🔗 @${sourceName} → @${targetName}\n⏳ 处理中...`);
 
   try {
+    const notifyMsg = `[bridge:notify from @${sourceName}] ${cleanMsg}`;
     const result = await execClaude(
-      targetSession.claude_session_id, cleanMsg,
+      targetSession.claude_session_id, notifyMsg,
       { cwd: group.project_path }
     );
     const targetOutput = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
