@@ -108,6 +108,11 @@ Windows (Mote-Office):
 - TASK_BOARD.md 集群任务板（多会话协作时避免冲突）
 - 会话索引自动注册（Bridge 访问过的会话在 VS Code 可见，含 aiTitle 命名）
 - pipe/VS Code 双格式兼容（`getMessageText` 同时支持字符串和数组 content）
+- CAST_OF_SESSIONS.md 会话角色名册（项目根，gitignore）— 分清谁是主线 worker / 谁是留档 auditor / 谁是墓碑 retired
+  - 交互会话：全局 SessionStart hook（`~/.claude/hooks/cast-of-sessions.js`）建文件 + 提醒会话自登记（源=交互）
+  - Bridge 会话：Agent `run-claude` 汇合点 `upsertCastBridge()` 机械登记（源=🌉 Bridge），不靠 hook 在 pipe 模式触发
+  - upsert 幂等：按 UUID8 匹配，Agent 只刷新名称/时间，**保留会话自己声明的角色/在做**
+  - 设计动因：进程活性可嗅探（查 `--resume` UUID），但「谁是主线 vs 谁是审计」是角色语义，机器推不出，只能由会话自己声明
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
@@ -190,6 +195,8 @@ Windows (Mote-Office):
 2. **DB 更新后变量不自动刷新** — `updateClaudeSessionId()` 改了 SQLite 但 JS 对象还是旧值。更新 DB 后必须重新 `getSessionByName()` 取最新数据。
 3. **精准关闭 + alreadyIndexed 互斥** — kill 会话进程后 VS Code 异步清理索引，检查 `alreadyIndexed` 可能读到旧条目然后跳过注册。现已改为每次必写 + 删旧。
 4. **先看数据再看代码** — 遇到 bug 不要猜代码逻辑，先 `Read` JSONL/DB 看看实际数据是什么。
+5. **chronicle sync 会「诈尸」已删项目文件夹**（2026-07-09 修复）— `writeChronicle` 从 JSONL 读出老 `cwd`，用 `mkdirSync(recursive)` 建 `.bridge/sessions/`。若用户已删该项目文件夹，recursive 会把整条路径**连同已删的顶层文件夹一起重建**（只剩一个含 `.bridge/` 的空壳）。因为历史会话 JSONL 永远躺在 `~/.claude/projects/`，每次 Bridge 活动 sync 一跑就复活一次。**修复**：`writeChronicle` / `upsertCastBridge` 写入前先 `fs.existsSync(projectPath)`，项目没了就跳过，绝不 mkdir 复活。教训：任何"从持久化的死路径重建目录"的逻辑都要先校验目标是否仍存在。
+6. **chronicle sync 同步全量读是潜在阻塞源（附一次误诊教训）**（2026-07-12 改进）— Agent `syncChronicles()` 每 60 秒被 Gateway 触发，**同步 `readFileSync` 把所有项目所有 JSONL 整个重读一遍**。会话 JSONL 涨大后（马拉松会话可达 MB 级），单线程会被这堆同步读卡住、阻塞 Agent 其它 HTTP 响应——是真实隐患。**改进**：① `fs.statSync` 比大小，JSONL 只追加、大小没变就跳过不读；② 改 `await fs.promises.readFile` 异步读，让出事件循环。**⚠️ 误诊教训**：排查"企微回复变慢/不回"时，我一度咬定是这个 sync 阻塞（还先后错怪过 IPv6、mihomo），全错——真因是**断电后服务器出站网络劣化**（`ping 223.5.5.5` 100% 丢包、qyapi TCP 连不上），重启路由器即好，与代码无关。教训：①定时全量同步读确是事件循环杀手，该修；②但别把"自己能想到的代码问题"当成症状的因，先用证据（`curl -w`/`ping` 一测）定位真因，这次真因在网络层。
 
 ### 🆕 新洞察：Bridge = 会话间通信总线
 - Gateway 已在中间，双向都能走消息
@@ -228,6 +235,9 @@ agent/
   setup-firewall.bat — 防火墙规则（一次性管理员运行）
 
 README.md           — 项目 README（架构、功能、使用、部署）
+
+CAST_OF_SESSIONS.md — 会话角色名册（项目根，gitignore，Agent + hook 维护）
+~/.claude/hooks/cast-of-sessions.js — 全局 SessionStart hook（建名册 + 提醒交互会话自登记）
 ```
 
 ---

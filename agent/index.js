@@ -202,6 +202,9 @@ app.post('/api/run-claude', (req, res) => {
         } catch {} // 找不到不影响主流程
       }
 
+      // 把这次 Bridge 会话登记进项目根 CAST_OF_SESSIONS.md（标 🌉 Bridge）
+      try { upsertCastBridge(cwd, sessionId || newSessionId); } catch {}
+
       if (err && !stdout) {
         res.json({ stdout: '', stderr: err.message, code: err.code || 1, newSessionId });
       } else {
@@ -443,6 +446,8 @@ app.post('/api/chronicle', (req, res) => {
 
 // 写入 chronicle 文件（也供 sync 使用）
 function writeChronicle(projectPath, sessionName, type, content, source) {
+  // 🛡️ 项目文件夹已被用户删除就跳过 —— 否则 mkdir recursive 会把已删文件夹整条诈尸重建
+  if (!projectPath || !fs.existsSync(projectPath)) return;
   const chronicleDir = path.join(projectPath, '.bridge', 'sessions');
   if (!fs.existsSync(chronicleDir)) fs.mkdirSync(chronicleDir, { recursive: true });
 
@@ -453,6 +458,58 @@ function writeChronicle(projectPath, sessionName, type, content, source) {
 
   const entry = `\n## ${ts}${sourceLabel}\n${typeIcon}: ${content.slice(0, 2000)}\n`;
   fs.appendFileSync(file, entry, 'utf-8');
+}
+
+// ── CAST_OF_SESSIONS.md 会话角色名册 ──────────────────────────────
+// 交互会话由 SessionStart hook 提醒自登记；Bridge 会话在此由 Agent 机械登记（标 🌉 Bridge）
+function castRosterHeader(project) {
+  return (
+    `# CAST OF SESSIONS — ${project}\n\n` +
+    `> 本项目会话角色名册。交互会话自己登记；Bridge 会话由 Agent 自动登记（标 🌉 Bridge）。\n` +
+    `> 机器只知道进程活没活；谁是主线、谁留档、谁是墓碑，只有会话自己知道 —— 所以写在这。\n` +
+    `> 来源：交互(VS Code) / 🌉 Bridge(企微)　角色：🔧 worker(当前主线) / 📋 auditor(留档备查,可 ask 勿派活) / 🪦 retired(墓碑,可删)\n\n` +
+    `| 会话 | UUID8 | 来源 | 角色 | 在做/负责 | 最后更新 |\n` +
+    `|------|-------|------|------|-----------|----------|\n`
+  );
+}
+
+// 幂等 upsert 一行：按 UUID8 匹配；已存在则保留「角色/在做」，只刷新 名称/来源/时间
+function upsertRoster(rosterPath, projectName, row) {
+  try {
+    let text = '';
+    try { text = fs.readFileSync(rosterPath, 'utf-8'); } catch {}
+    if (!text.trim()) text = castRosterHeader(projectName);
+
+    const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const lines = text.split('\n');
+    const idx = lines.findIndex(l => l.startsWith('|') && l.includes(`| ${row.uuid8} `));
+    if (idx >= 0) {
+      const c = lines[idx].split('|').map(s => s.trim()); // ['',会话,UUID8,来源,角色,在做,最后更新,'']
+      const role = c[4] || '(未标注)';
+      const doing = c[5] || '';
+      lines[idx] = `| ${row.name} | ${row.uuid8} | ${row.source} | ${role} | ${doing} | ${ts} |`;
+      text = lines.join('\n');
+    } else {
+      text = text.replace(/\s*$/, '') + `\n| ${row.name} | ${row.uuid8} | ${row.source} | (未标注) |  | ${ts} |\n`;
+    }
+    fs.writeFileSync(rosterPath, text, 'utf-8');
+  } catch {}
+}
+
+// 把一个 Bridge 会话登记进项目根 CAST_OF_SESSIONS.md（标 🌉 Bridge）
+function upsertCastBridge(projectPath, sessionId) {
+  if (!projectPath || !sessionId) return;
+  if (!fs.existsSync(projectPath)) return; // 🛡️ 项目已被删除就跳过，别复活它
+  try {
+    const jsonlPath = path.join(PROJECTS_DIR, encodeProject(projectPath), `${sessionId}.jsonl`);
+    const meta = getSessionMeta(jsonlPath, sessionId);
+    const name = meta.sessionName || sessionId.slice(0, 8);
+    upsertRoster(
+      path.join(projectPath, 'CAST_OF_SESSIONS.md'),
+      path.basename(projectPath),
+      { name, uuid8: sessionId.slice(0, 8), source: '🌉 Bridge' }
+    );
+  } catch {}
 }
 
 // 从 JSONL 读取会话名和项目路径
@@ -474,11 +531,17 @@ function getSessionMeta(jsonlPath, sessionId) {
 
 // 同步所有项目的 JSONL → chronicle（覆盖 VS Code 和 Bridge 会话）
 const TRACK_FILE = path.join(os.homedir(), '.claude', '.chronicle-sync.json');
-function syncChronicles() {
+// 异步 + 按文件大小跳过：静止的会话直接不读，只有涨了的才异步读新行，避免阻塞事件循环
+async function syncChronicles() {
   if (!fs.existsSync(PROJECTS_DIR)) return { synced: 0 };
 
   let track = {};
   try { track = JSON.parse(fs.readFileSync(TRACK_FILE, 'utf-8')); } catch {}
+  // 兼容旧格式：track[sid] 曾是纯数字(lineCount)，现升级为 {lines, size}
+  const getRec = (sid) => {
+    const r = track[sid];
+    return typeof r === 'number' ? { lines: r, size: 0 } : (r || { lines: 0, size: 0 });
+  };
 
   let synced = 0;
   const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
@@ -491,19 +554,25 @@ function syncChronicles() {
     for (const f of jsonls) {
       const sessionId = f.replace('.jsonl', '');
       const jsonlPath = path.join(PROJECTS_DIR, dir.name, f);
-      const lastLineCount = track[sessionId] || 0;
+      const rec = getRec(sessionId);
 
+      // 🚀 先 stat（廉价）：JSONL 只追加，大小没变=无新内容，直接跳过，绝不读大文件
+      let stat;
+      try { stat = fs.statSync(jsonlPath); } catch { continue; }
+      if (rec.size > 0 && stat.size === rec.size) continue;
+
+      // 🚀 异步读，让出事件循环，读大文件时不卡其他 HTTP 请求
       let content;
-      try { content = fs.readFileSync(jsonlPath, 'utf-8'); } catch { continue; }
+      try { content = await fs.promises.readFile(jsonlPath, 'utf-8'); } catch { continue; }
       const lines = content.split('\n').filter(Boolean);
       const currentLineCount = lines.length;
-      if (currentLineCount <= lastLineCount) continue; // 无新行
+      if (currentLineCount <= rec.lines) { track[sessionId] = { lines: currentLineCount, size: stat.size }; continue; }
 
       const meta = getSessionMeta(jsonlPath, sessionId);
-      if (!meta.projectPath) continue;
+      if (!meta.projectPath) { track[sessionId] = { lines: currentLineCount, size: stat.size }; continue; }
 
       // 处理新行
-      for (let i = lastLineCount; i < currentLineCount; i++) {
+      for (let i = rec.lines; i < currentLineCount; i++) {
         try {
           const j = JSON.parse(lines[i]);
           const text = getMessageText(j.message);
@@ -518,7 +587,7 @@ function syncChronicles() {
         } catch {}
       }
 
-      track[sessionId] = currentLineCount;
+      track[sessionId] = { lines: currentLineCount, size: stat.size };
     }
   }
 
@@ -527,9 +596,9 @@ function syncChronicles() {
 }
 
 // POST /api/sync-chronicles — 扫描并同步所有会话
-app.post('/api/sync-chronicles', (req, res) => {
+app.post('/api/sync-chronicles', async (req, res) => {
   try {
-    const result = syncChronicles();
+    const result = await syncChronicles();
     res.json({ status: 'ok', ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
