@@ -668,12 +668,12 @@ app.post('/api/bridge/ask', (req, res) => {
     return res.status(404).json({ error: `target session not found: "${targetName}"` });
   }
 
-  // 转发给 Gateway（Cloudflare Tunnel 公网入口），带上已解析的 sessionId
-  const https = require('https');
+  // 转发给 Gateway（Tailscale 内网直连）
+  const http = require('http');
   const data = JSON.stringify({ projectPath, sourceName, sourceId, targetName, targetSessionId, message });
 
-  const gwReq = https.request({
-    hostname: 'claude-tunnel.mote-pal.xyz', path: '/api/bridge/ask',
+  const gwReq = http.request({
+    hostname: '100.118.10.0', port: 8933, path: '/api/bridge/ask',
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
     timeout: 10000,

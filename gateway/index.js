@@ -781,4 +781,4 @@ async function syncAllChronicles() {
 setInterval(syncAllChronicles, 60000);
 syncAllChronicles(); // 启动时立即跑一次
 
-app.listen(config.port, '127.0.0.1', () => console.log(`Claude-Bridge Gateway on 127.0.0.1:${config.port}`));
+app.listen(config.port, '0.0.0.0', () => console.log(`Claude-Bridge Gateway on 0.0.0.0:${config.port}`));
