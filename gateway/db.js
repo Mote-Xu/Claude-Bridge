@@ -60,6 +60,9 @@ function init(dbPath) {
 function getGroup(chatId) {
   return db.prepare('SELECT * FROM groups WHERE chat_id = ?').get(chatId);
 }
+function getGroupByProjectPath(projectPath) {
+  return db.prepare('SELECT * FROM groups WHERE project_path = ? ORDER BY created_at DESC LIMIT 1').get(projectPath);
+}
 function addGroup(chatId, projectName, projectPath) {
   return db.prepare('INSERT OR REPLACE INTO groups (chat_id, project_name, project_path) VALUES (?, ?, ?)')
     .run(chatId, projectName, projectPath);
@@ -150,6 +153,12 @@ function getSessionById(id) {
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
 }
 
+// 取任意 chat_id（用于 bridge/send 不依赖 groups 表）
+function getAnyChatId() {
+  const row = db.prepare("SELECT chat_id FROM sessions WHERE chat_id != '' ORDER BY last_active DESC LIMIT 1").get();
+  return row?.chat_id || null;
+}
+
 // === Audit ===
 function auditLog(chatId, sessionId, direction, content) {
   return db.prepare('INSERT INTO audit_log (chat_id, session_id, direction, content) VALUES (?, ?, ?, ?)')
@@ -178,7 +187,8 @@ function removeGroup(chatId) {
 
 module.exports = {
   init,
-  getGroup, addGroup, removeGroup,
+  getGroup, getGroupByProjectPath, addGroup, removeGroup,
+  getAnyChatId,
   getSessionByName, getActiveSessions, listSessions, getSessionById,
   createSession, upsertSession, updateClaudeSessionId, touchSession, updateSessionStatus,
   enqueueTask, getPendingTasks, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed,

@@ -662,6 +662,71 @@ app.post('/webhook', async (req, res) => {
 });
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// POST /api/bridge/ask — 会话给会话发消息的标准入口
+// A 调此接口 → 立刻返回（A 死） → Gateway 异步驱动 B → B 回复注入回 A（唤醒） → 全程企微可见
+app.post('/api/bridge/ask', express.json(), async (req, res) => {
+  const { projectPath, sourceName, sourceId, targetName, targetSessionId, message } = req.body;
+  if (!projectPath || !sourceName || !targetName || !message) {
+    return res.status(400).json({ error: 'projectPath, sourceName, targetName, message required' });
+  }
+
+  const chatRow = dbGetChatId();
+  if (!chatRow) return res.status(404).json({ error: 'no chat — send a WeChat message first' });
+  const chatId = chatRow.chat_id;
+
+  // 立刻返回，A 死
+  res.json({ status: 'queued', note: `@${sourceName} → @${targetName}, waiting for reply…` });
+
+  // 异步执行（火后忘掉）
+  (async () => {
+    try {
+      await reply(chatId, chatId, `🔗 @${sourceName} → @${targetName} (ask)\n⏳ 处理中...`);
+
+      // 构建发给 B 的消息（如果 Agent 给了 targetSessionId 直接用，否则走 bridgeRoute 的文本解析）
+      let bResult;
+      if (targetSessionId) {
+        const bMessage = `[bridge:from=${sourceName}] ${message}`;
+        bResult = await execClaude(targetSessionId, bMessage, { cwd: projectPath.replace(/\//g, '\\') });
+      } else {
+        // fallback: 走 bridgeRoute 文本解析
+        const group = { project_path: projectPath.replace(/\//g, '\\'), project_name: '' };
+        const output = `@bridge:ask ${targetName} ${message}`;
+        await bridgeRoute(chatId, chatId, output, group, sourceName);
+        return;
+      }
+
+      const bOutput = (bResult.stdout || bResult.stderr || '(无输出)').slice(0, 3000);
+      await reply(chatId, chatId, `🔗 @${targetName} → @${sourceName} (reply)\n⏳ @${sourceName} 整合中...`);
+
+      // 把 B 的回复注入 A（唤醒）
+      if (sourceId) {
+        const aMessage = `[ASYNC EVENT]
+你在上一轮向 @${targetName} 发起了 ask 请求，消息是："${message.slice(0, 200)}"
+以下是 @${targetName} 的回复：
+---
+${bOutput.slice(0, 2500)}
+---
+请基于上述回复，继续你未完成的任务。`;
+        const aResult = await execClaude(sourceId, aMessage, { cwd: projectPath.replace(/\//g, '\\') });
+        const aOutput = (aResult.stdout || aResult.stderr || '(无输出)').slice(0, 3800);
+        await reply(chatId, chatId, `✅ @${sourceName} 完成:\n${aOutput}`);
+      } else {
+        await reply(chatId, chatId, `🔗 @${targetName}:\n${bOutput}`);
+      }
+    } catch (err) {
+      await reply(chatId, chatId, `❌ Bridge ask 失败: ${err.message.slice(0, 300)}`);
+    }
+  })().catch(err => console.error('Bridge ask async error:', err.message));
+});
+
+// 直接从 audit_log 取最近 chat_id（不依赖 sessions 表）
+function dbGetChatId() {
+  try {
+    const db = require('better-sqlite3')(config.dbPath);
+    return db.prepare("SELECT chat_id FROM audit_log WHERE chat_id != '' ORDER BY created_at DESC LIMIT 1").get();
+  } catch { return null; }
+}
+
 // 定时 drain：每 30 秒检查电脑是否恢复在线，自动重试 pending 任务
 let drainRunning = false;
 async function drainPendingTasks() {

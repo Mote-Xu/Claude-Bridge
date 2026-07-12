@@ -18,7 +18,30 @@ app.use(express.json({ limit: '1mb' }));
 // ========== 工具函数 ==========
 
 function encodeProject(projectPath) {
-  return projectPath[0].toLowerCase() + projectPath.slice(1).replace(/[:\\_]/g, '-');
+  const norm = (projectPath || '').replace(/\//g, '\\');
+  // Claude Code 用不同编码算法，不猜。扫描 projects 目录找到匹配 cwd 的目录
+  if (fs.existsSync(PROJECTS_DIR)) {
+    const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+    for (const d of dirs) {
+      try {
+        const files = fs.readdirSync(path.join(PROJECTS_DIR, d.name)).filter(f => f.endsWith('.jsonl'));
+        if (files.length === 0) continue;
+        const content = fs.readFileSync(path.join(PROJECTS_DIR, d.name, files[0]), 'utf-8');
+        for (const line of content.split('\n').slice(0, 30)) {
+          try {
+            const j = JSON.parse(line);
+            if (j.cwd) {
+              const cwd = j.cwd.replace(/\\\\/g, '\\');
+              if (cwd.toLowerCase() === norm.toLowerCase()) return d.name;
+              break;
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  }
+  // fallback: 自己算
+  return norm[0].toLowerCase() + norm.slice(1).replace(/[:\\_]/g, '-');
 }
 
 // 兼容两种消息格式：VS Code 的数组格式和 pipe 模式的字符串格式
@@ -603,6 +626,57 @@ app.post('/api/sync-chronicles', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /api/bridge/ask — 会话给会话发消息的标准入口
+// Agent 先解析目标会话 UUID，再转发给 Gateway
+app.post('/api/bridge/ask', (req, res) => {
+  const { projectPath, sourceName, targetName, message } = req.body;
+  if (!projectPath || !sourceName || !targetName || !message) {
+    return res.status(400).json({ error: 'projectPath, sourceName, targetName, message required' });
+  }
+
+  // 从 JSONL 文件找 source 和 target 的 sessionId
+  const encoded = encodeProject(projectPath);
+  const projDir = path.join(PROJECTS_DIR, encoded);
+  let targetSessionId = null, sourceId = null;
+  if (fs.existsSync(projDir)) {
+    for (const f of fs.readdirSync(projDir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        const content = fs.readFileSync(path.join(projDir, f), 'utf-8');
+        for (const line of content.split('\n').slice(0, 30)) {
+          try {
+            const j = JSON.parse(line);
+            if (j.aiTitle) {
+              if (j.aiTitle.includes(targetName)) { targetSessionId = f.replace('.jsonl', ''); break; }
+              if (j.aiTitle.includes(sourceName)) { sourceId = f.replace('.jsonl', ''); break; }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  }
+  if (!targetSessionId) {
+    return res.status(404).json({ error: `target session not found: "${targetName}"` });
+  }
+
+  // 转发给 Gateway（Cloudflare Tunnel 公网入口），带上已解析的 sessionId
+  const https = require('https');
+  const data = JSON.stringify({ projectPath, sourceName, sourceId, targetName, targetSessionId, message });
+
+  const gwReq = https.request({
+    hostname: 'claude-tunnel.mote-pal.xyz', path: '/api/bridge/ask',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+    timeout: 10000,
+  }, gwRes => {
+    let buf = ''; gwRes.on('data', d => buf += d);
+    gwRes.on('end', () => { try { res.json(JSON.parse(buf)); } catch { res.json({ status: 'error', detail: buf.slice(0, 200) }); } });
+  });
+  gwReq.on('error', err => res.status(502).json({ error: 'Gateway unreachable: ' + err.message }));
+  gwReq.write(data);
+  gwReq.end();
 });
 
 // POST /api/kill-vscode — 手动关闭 VS Code
