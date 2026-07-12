@@ -11,11 +11,19 @@ dbInit(config.dbPath);
 
 // ========== 会话执行锁 ==========
 // 防止同一会话被同时执行（撞车）。Gateway 单进程，内存 Set 足够
-const sessionBusy = new Set(); // session DB id → true
+const sessionBusy = new Set();   // session DB id → true
+const sessionBusyUuids = new Set(); // claude_session_id (UUID) → true
 
-function markBusy(sessionId) { sessionBusy.add(sessionId); }
-function markIdle(sessionId) { sessionBusy.delete(sessionId); }
+function markBusy(sessionId, uuid) {
+  sessionBusy.add(sessionId);
+  if (uuid) sessionBusyUuids.add(uuid);
+}
+function markIdle(sessionId, uuid) {
+  sessionBusy.delete(sessionId);
+  if (uuid) sessionBusyUuids.delete(uuid);
+}
 function isBusy(sessionId) { return sessionBusy.has(sessionId); }
+function isBusyUuid(uuid) { return sessionBusyUuids.has(uuid); }
 
 async function reply(chatId, userId, text) {
   await wecom.sendMessage(chatId, userId, text.slice(0, 4000));
@@ -196,7 +204,8 @@ async function handleMessage(chatId, userId, text) {
       active.forEach((s, i) => {
         const raw = (s.claude_session_id && titleMap[s.claude_session_id]) || s.session_name;
 	        const title = (raw && raw.startsWith('bridge-')) ? '[Bridge] ' + raw.slice(7) : raw;
-        msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)`;
+        const busy = isBusyUuid(s.claude_session_id) ? ' 🔄' : '';
+        msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)${busy}`;
       });
     }
     if (history.length > 0) {
@@ -205,7 +214,8 @@ async function handleMessage(chatId, userId, text) {
       history.slice(0, 10).forEach((s, i) => {
         const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
 	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
-        msg += `\n  ${startIdx + i + 1}. ${label}`;
+        const busy = isBusyUuid(s.id) ? ' 🔄' : '';
+        msg += `\n  ${startIdx + i + 1}. ${label}${busy}`;
       });
     }
     msg += '\n\n回复序号切换会话，或直接发消息';
@@ -372,7 +382,8 @@ async function handleMessage(chatId, userId, text) {
       history.slice(0, 6).forEach((s, i) => {
         const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
 	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
-        msg += `\n  ${startIdx + i + 1}. ${label}`;
+        const busy = isBusyUuid(s.id) ? ' 🔄' : '';
+        msg += `\n  ${startIdx + i + 1}. ${label}${busy}`;
       });
     }
     msg += '\n\n或直接说 @会话名 <消息>';
@@ -534,7 +545,7 @@ async function drainSessionQueue(chatId, sessionId, group) {
   const claudeSid = s?.claude_session_id || null;
   const sessionName = s?.session_name || '未知';
 
-  markBusy(sessionId);
+  markBusy(sessionId, claudeSid);
   try {
     await reply(task.chat_id, task.sender, `📤 @${sessionName} 排队任务开始执行...`);
     const result = await execClaude(claudeSid, task.message, { cwd: group.project_path });
@@ -551,7 +562,7 @@ async function drainSessionQueue(chatId, sessionId, group) {
     await reply(task.chat_id, task.sender, `❌ 排队任务失败: ${err.message.slice(0, 200)}`);
   } finally {
     markTaskProcessed(task.id);
-    markIdle(sessionId);
+    markIdle(sessionId, claudeSid);
     // 递归处理下一个排队任务
     await drainSessionQueue(chatId, sessionId, group);
   }
@@ -587,7 +598,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     await reply(chatId, userId, `📥 @${name} 正在处理中，消息已排队（稍后自动执行）`);
     return;
   }
-  if (s) markBusy(s.id);
+  if (s) markBusy(s.id, s.claude_session_id);
 
   await reply(chatId, userId, `Claude·${name}:\n⏳ 处理中...`);
 
@@ -622,7 +633,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
   } finally {
     // 🔓 释放锁 + 排空队列
     if (s) {
-      markIdle(s.id);
+      markIdle(s.id, s.claude_session_id);
       drainSessionQueue(chatId, s.id, group).catch(e => console.error('Session drain error:', e));
     }
   }
@@ -725,7 +736,8 @@ async function drainPendingTasks() {
         continue;
       }
       try {
-        if (task.session_id) markBusy(task.session_id);
+        const ts = task.session_id ? getSessionById(task.session_id) : null;
+        if (ts) markBusy(task.session_id, ts.claude_session_id);
         await reply(task.chat_id, task.sender, `📤 重试排队任务...`);
         const result = await execClaude(null, task.message, { cwd: group.project_path });
         const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
@@ -734,7 +746,8 @@ async function drainPendingTasks() {
         console.error(`Drain task ${task.id} failed:`, err.message);
         await reply(task.chat_id, task.sender, `❌ 排队任务失败: ${err.message.slice(0, 200)}`);
       } finally {
-        if (task.session_id) markIdle(task.session_id);
+        const ts2 = task.session_id ? getSessionById(task.session_id) : null;
+        if (ts2) markIdle(task.session_id, ts2.claude_session_id);
         markTaskProcessed(task.id);
       }
     }
