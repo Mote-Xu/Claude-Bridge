@@ -694,12 +694,15 @@ app.post('/api/bridge/ask', express.json(), async (req, res) => {
     try {
       await reply(chatId, chatId, `🔗 @${sourceName} → @${targetName}\n⏳ 处理中...`);
 
+      markBusy(0, targetSessionId); // 用 UUID 追踪（DB id 为 placeholder）
       const bMessage = `[bridge:from=${sourceName}] ${message}`;
       const bResult = await execClaude(targetSessionId, bMessage, { cwd });
       const bOutput = (bResult.stdout || bResult.stderr || '(无输出)').slice(0, 3800);
+      markIdle(0, targetSessionId);
 
       await reply(chatId, chatId, `✅ @${targetName}:\n${bOutput}`);
     } catch (err) {
+      markIdle(0, targetSessionId);
       await reply(chatId, chatId, `❌ @${sourceName} → @${targetName}: ${err.message.slice(0, 300)}`);
     }
   })().catch(err => console.error('Bridge ask async error:', err.message));
