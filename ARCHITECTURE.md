@@ -25,13 +25,13 @@ Claude 会话      = 执行层（各司其职的 Worker）
 | 决策 | 理由 |
 |------|------|
 | Windows Agent + HTTP | 消灭 SSH 转义地狱。Agent 本地读写文件、调 child_process，Gateway 与 Agent 之间标准 HTTP JSON |
-| 纯 HTTP，无 SSH | Windows sshd 已 stop + disabled。Agent 仅暴露 7 个 API，无远程 Shell 访问 |
+| 纯 HTTP，无 SSH | Windows sshd 已 stop + disabled。Agent 仅暴露 12 个 API，无远程 Shell 访问 |
 | `echo msg \| claude --resume` + `CI=true` | Pipe 模式单向 stdin→stdout，与 VS Code 同一套 JSONL session store |
 | `--resume` | 会话上下文通过 JSONL 持久化，跨消息续接 |
 | Gateway 做执行锁 | Busy/Idle 状态机 + 消息排队，防止同一会话并发撞车 |
 | 黑板模式 | 项目共享 md 文件是会话间唯一共享上下文，所有会话天然可读写 |
 | 会话公开履历 | `.bridge/sessions/@name.md` 每次执行自动追加输入输出，集群内透明 |
-| `@bridge:ask` 上下文缝合 | `--resume` 是 new inference 而非 continuation，必须注入 ASYNC EVENT 帧防止重新推理 |
+| `/api/bridge/ask` 对称 API | 发起和回复走同一接口，每次独立调用，fire-and-die |
 | 两层身份 | 机读层用 UUID（路由），人读层用 aiTitle（企微显示） |
 | Tailscale 内网通信 | Gateway → Agent 走 Tailscale WireGuard，无需公网暴露 Windows |
 

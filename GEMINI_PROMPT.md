@@ -1,13 +1,13 @@
 # Claude Bridge — 外部 AI 咨询记录
 
-## 第二轮咨询结论（2026-07-05）
+## 第二轮咨询结论（2026-07）
 
 ### 六个问题的共识答案
 
 1. **BRIDGE_LOG.md 粒度**：不能逐条 append。双层结构 — CLUSTER_SNAPSHOT（覆盖写入，"谁忙谁闲、锁了哪些文件"）+ RECENT_LOGS（滚动保留最近 ~15 条）
 2. **黑板并发写入**：必须 Agent 原子写入 API（`POST /api/board/update`，文件排它锁）。纯 Git 竞争是小时级的，AI 并发是秒级的，不够
 3. **启动感知**：按需加载。Level 0 默认只读 CLAUDE.md + TASK_BOARD.md；Level 1 用户问进度才读 BRIDGE_LOG.md
-4. **@bridge:ask 的 resume 语义**：`--resume` 是 context restore + new inference，不是 continuation。Gateway 必须显式缝合上下文（ASYNC EVENT 帧），否则 A 可能"重新推理"而非"继续"
+4. **@bridge:ask 的 resume 语义**：已改为对称 API——回复方自己调 `/api/bridge/ask`，Gateway 不再自动注入回复
 5. **防撞车**：人眼不够，必须 Gateway 级会话执行锁。会话 Busy 时新消息入队排队，Idle 后自动 drain。策略是队列化 + backpressure，不拒绝
 6. **盲区**：缺"全局一致性层"。多 agent + 通信有了，但没一致世界模型。三个迟早踩的坑：认知分裂（A 和 B 对架构理解不同）、状态漂移（task board ≠ git ≠ reality）、幽灵任务
 

@@ -63,7 +63,7 @@ curl -X POST http://127.0.0.1:9877/api/bridge/ask \
 
 - **消灭转义地狱**：Agent 本地读写文件、调 child_process，不存在远程 shell 多层转义
 - **JSON 原生通信**：Gateway 和 Agent 之间是标准 HTTP JSON
-- **可限定权限**：Agent 仅暴露 7 个 API，无远程 Shell 访问
+- **可限定权限**：Agent 仅暴露 12 个 API，无远程 Shell 访问
 
 ---
 
@@ -149,19 +149,10 @@ Windows (Mote-Office):
 - 企微推送排队通知：`📥 消息已排队（会话正忙）`
 
 **@bridge:ask 双向通信** ✅
-- 路由：显式 `[from=<uuid>][to=<uuid>]`，Gateway 纯路由
-  - 机读层：JSONL 文件名 UUID（唯一不变）
-  - 人读层：aiTitle（企微显示）
-- 上下文缝合：Gateway 注入 B 的回复时必须带完整事件帧——
-  ```
-  [ASYNC EVENT] 你在上一轮向 @B 发起了 ask。
-  你的问题是："..."
-  B 的回复如下：...
-  请基于此继续你未完成的任务。
-  ```
-  否则 `--resume` 是全新 inference，A 可能"重新推理"而非"继续"
-- 企微群实时状态推送：`🔗 A→B` / `👤 B 处理中` / `🔗 B→A reply` / `✅ A 完成`
-- 环形依赖检测：A→B→A 时直接报错截断
+- 对称 API：`POST /api/bridge/ask`，发起和回复走同一接口
+- 来源标注：`[bridge:from=会话名]` 前缀，接收方知道是谁发的
+- 调完立刻返回（fire-and-die），Gateway 异步驱动目标，目标可调同一 API 回复
+- 企微群实时状态推送：`🔗 A→B` / `⏳ 处理中` / `✅ B完成`
 
 **`.bridge/sessions/@会话名.md` — 会话公开履历** ✅
 - Gateway 每次执行完自动往项目 `.bridge/sessions/@会话名.md` 追加输入+输出
@@ -189,7 +180,7 @@ Windows (Mote-Office):
 
 **第一层：通信增强（当前）**
 - [x] 会话执行锁 — Busy/Idle 状态机 + 消息排队
-- [x] `@bridge:ask` / `@bridge:reply` + 上下文缝合 + 企微状态推送
+- [x] `/api/bridge/ask` 对称通信 API + 企微状态推送
 - [x] `.bridge/sessions/@会话名.md` — 会话公开履历
 - [ ] BRIDGE_LOG.md 双层结构（SNAPSHOT + RECENT_LOGS）
 - [ ] CLAUDE.md 分区（架构只读 / 决策追加）
@@ -209,7 +200,7 @@ Windows (Mote-Office):
 - 电脑上先用 VS Code 创建会话，手机 `--resume` 续接，上下文完全保留
 - 企微发消息不关 VS Code 标签页；发 `关vscode` 手动全关，重开自动恢复
 
-### ⚠️ 已知陷阱（2026-07-05 踩坑记录）
+### ⚠️ 已知陷阱（2026-07-12 踩坑记录）
 
 1. **pipe 模式的 JSONL 格式不同** — `content` 是字符串 `"hello"`，不是数组 `[{text:"hello"}]`。所有读 JSONL 的代码必须兼容两种格式（用 `getMessageText()`）。
 2. **DB 更新后变量不自动刷新** — `updateClaudeSessionId()` 改了 SQLite 但 JS 对象还是旧值。更新 DB 后必须重新 `getSessionByName()` 取最新数据。
@@ -249,7 +240,7 @@ gateway/
   config.js     — 配置文件
 
 agent/
-  index.js          — Windows Agent Express 服务 (7 API)
+  index.js          — Windows Agent Express 服务 (12 API)
   start.bat         — 开机自启脚本
   start-hidden.vbs  — 后台静默启动 + VBS 守护循环
   setup-firewall.bat — 防火墙规则（一次性管理员运行）
@@ -273,6 +264,11 @@ CAST_OF_SESSIONS.md — 会话角色名册（项目根，gitignore，Agent + hoo
 | `POST /api/session-preview` | 话题消息 + 最近几轮 + 统计 |
 | `GET /api/hidden-sessions` | 读 VS Code state.vscdb 取隐藏会话 ID |
 | `POST /api/reload` | 退出进程（VBS 守护自动拉起 = 热重载） |
+| `POST /api/chronicle` | 写会话公开记录到 `.bridge/sessions/@name.md` |
+| `POST /api/bridge/ask` | 会话间通信（解析目标 UUID，转发 Gateway） |
+| `POST /api/sync-chronicles` | 扫描所有项目 JSONL，同步 chronicle |
+| `GET /api/busy-sessions` | 查询当前正在执行的会话 |
+| `POST /api/kill-vscode` | 手动关闭 VS Code |
 
 ---
 
