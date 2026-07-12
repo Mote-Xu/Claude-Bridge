@@ -540,12 +540,18 @@ function getSessionMeta(jsonlPath, sessionId) {
   let projectPath = null, sessionName = null;
   try {
     const content = fs.readFileSync(jsonlPath, 'utf-8');
-    const lines = content.split('\n').slice(0, 30);
+    // 从后往前：最后一个 aiTitle 才是当前名字（和企微列表一致），cwd 从前往后取
+    const lines = content.split('\n');
     for (const line of lines) {
       try {
         const j = JSON.parse(line);
-        if (j.cwd) projectPath = j.cwd.replace(/\\\\/g, '\\');
-        if (j.aiTitle && !sessionName) sessionName = j.aiTitle;
+        if (j.cwd && !projectPath) projectPath = j.cwd.replace(/\\\\/g, '\\');
+      } catch {}
+    }
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const j = JSON.parse(lines[i]);
+        if (j.aiTitle) { sessionName = j.aiTitle; break; }
       } catch {}
     }
   } catch {}
@@ -645,7 +651,8 @@ app.post('/api/bridge/ask', (req, res) => {
       if (!f.endsWith('.jsonl')) continue;
       try {
         const content = fs.readFileSync(path.join(projDir, f), 'utf-8');
-        for (const line of content.split('\n').slice(0, 30)) {
+        // 从后往前扫：aiTitle 会变，最后一条才是当前名字（和企微列表一致）
+        for (const line of content.split('\n').reverse()) {
           try {
             const j = JSON.parse(line);
             if (j.aiTitle) {
