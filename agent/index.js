@@ -504,7 +504,7 @@ function castRosterHeader(project) {
   );
 }
 
-// 幂等 upsert 一行：按 UUID8 匹配；已存在则保留「角色/在做」，只刷新 名称/来源/时间
+// 幂等 upsert 一行：按 UUID8 匹配；已存在则保留「来源/角色/在做」，只刷新 名称/时间
 function upsertRoster(rosterPath, projectName, row) {
   try {
     let text = '';
@@ -516,9 +516,10 @@ function upsertRoster(rosterPath, projectName, row) {
     const idx = lines.findIndex(l => l.startsWith('|') && l.includes(`| ${row.uuid8} `));
     if (idx >= 0) {
       const c = lines[idx].split('|').map(s => s.trim()); // ['',会话,UUID8,来源,角色,在做,最后更新,'']
+      const src = c[3] || row.source; // 保留已有来源（SessionStart hook 设为「交互」时不被 Agent 覆写）
       const role = c[4] || '(未标注)';
       const doing = c[5] || '';
-      lines[idx] = `| ${row.name} | ${row.uuid8} | ${row.source} | ${role} | ${doing} | ${ts} |`;
+      lines[idx] = `| ${row.name} | ${row.uuid8} | ${src} | ${role} | ${doing} | ${ts} |`;
       text = lines.join('\n');
     } else {
       text = text.replace(/\s*$/, '') + `\n| ${row.name} | ${row.uuid8} | ${row.source} | (未标注) |  | ${ts} |\n`;
