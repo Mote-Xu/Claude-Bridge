@@ -75,6 +75,24 @@ async function handleMessage(chatId, userId, text) {
     return history.filter(h => !hiddenIds.has(h.id));
   }
 
+  // 会话状态
+  if (trimmed === '/status' || trimmed === '状态') {
+    try {
+      const res = await agentCall('GET', '/api/busy-sessions', null, 5000);
+      const busy = res.busy || [];
+      if (busy.length === 0) {
+        await reply(chatId, userId, '⚪ 当前没有会话正在执行。');
+      } else {
+        let msg = `🔄 ${busy.length} 个会话正在执行：`;
+        for (const s of busy) msg += `\n  · ${s.name} (${s.id.slice(0, 8)})`;
+        await reply(chatId, userId, msg);
+      }
+    } catch {
+      await reply(chatId, userId, '❌ 无法获取会话状态（Agent 不可用）');
+    }
+    return;
+  }
+
   // 帮助
   if (trimmed === '/help' || trimmed === '帮助') {
     await reply(chatId, userId,
@@ -90,6 +108,7 @@ async function handleMessage(chatId, userId, text) {
       '  @会话名 done — 结束会话\n' +
       '  隐藏 <序号> / 取消隐藏 <序号> — 隐藏/恢复会话\n' +
       '  隐藏列表 / /hidden — 查看已隐藏的会话\n' +
+      '  状态 / /status — 查看哪些会话正在执行\n' +
       '  关vscode / /kill-vscode — 手动关闭 VS Code\n' +
       '  直接发消息 — 发给当前活跃会话'
     );
@@ -204,8 +223,7 @@ async function handleMessage(chatId, userId, text) {
       active.forEach((s, i) => {
         const raw = (s.claude_session_id && titleMap[s.claude_session_id]) || s.session_name;
 	        const title = (raw && raw.startsWith('bridge-')) ? '[Bridge] ' + raw.slice(7) : raw;
-        const busy = isBusyUuid(s.claude_session_id) ? ' 🔄' : '';
-        msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)${busy}`;
+        msg += `\n  ${i + 1}. @${title} (${s.message_count}轮)`;
       });
     }
     if (history.length > 0) {
@@ -214,8 +232,7 @@ async function handleMessage(chatId, userId, text) {
       history.slice(0, 10).forEach((s, i) => {
         const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
 	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
-        const busy = isBusyUuid(s.id) ? ' 🔄' : '';
-        msg += `\n  ${startIdx + i + 1}. ${label}${busy}`;
+        msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }
     msg += '\n\n回复序号切换会话，或直接发消息';

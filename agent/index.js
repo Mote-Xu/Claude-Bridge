@@ -12,6 +12,9 @@ const PORT = process.env.PORT || 9877;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const CLAUDE_BIN = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd');
 
+// 会话执行状态追踪（覆盖所有路径：VS Code、Bridge、API）
+const sessionBusy = new Set(); // claude session UUID → true
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
@@ -196,7 +199,10 @@ app.post('/api/run-claude', (req, res) => {
     lines.push(`type "${msgFile}" | "${CLAUDE_BIN}"${sessionId ? ` --resume "${sessionId}"` : ''}`);
     fs.writeFileSync(batFile, lines.join('\r\n') + '\r\n', 'utf-8');
 
+    if (sessionId) sessionBusy.add(sessionId);
+
     exec(batFile, { timeout: 180000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' }, (err, stdout, stderr) => {
+      if (sessionId) sessionBusy.delete(sessionId);
       // 清理临时文件
       try { fs.unlinkSync(msgFile); } catch {}
       try { fs.unlinkSync(batFile); } catch {}
@@ -296,12 +302,14 @@ app.post('/api/list-sessions', (req, res) => {
       if (!hasUserMessage) continue;
       const bestSummary = aiTitle || summary;
       if (!bestSummary || bestSummary.length < 5) continue; // hello / 乱码 等
+      const sid = f.replace('.jsonl', '');
       sessions.push({
-        id: f.replace('.jsonl', ''),
+        id: sid,
         date: stat.mtime.toISOString().slice(0, 16).replace('T', ' '),
         summary: aiTitle || summary,
         sortTime: lastActivity,
         entrypoint: entrypoint,
+        busy: sessionBusy.has(sid),
       });
     }
     // 从 session index 读取标题
@@ -632,6 +640,29 @@ app.post('/api/sync-chronicles', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/busy-sessions — 查询当前正在执行的会话
+app.get('/api/busy-sessions', (req, res) => {
+  const busyList = [];
+  for (const sid of sessionBusy) {
+    // 找这个 session 的 aiTitle
+    let name = sid.slice(0, 8);
+    if (fs.existsSync(PROJECTS_DIR)) {
+      for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const f = path.join(PROJECTS_DIR, d.name, `${sid}.jsonl`);
+        if (!fs.existsSync(f)) continue;
+        try {
+          const meta = getSessionMeta(f, sid);
+          name = meta.sessionName || name;
+        } catch {}
+        break;
+      }
+    }
+    busyList.push({ id: sid, name });
+  }
+  res.json({ busy: busyList, count: busyList.length });
 });
 
 // POST /api/bridge/ask — 会话给会话发消息的标准入口
