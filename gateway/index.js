@@ -78,7 +78,7 @@ async function handleMessage(chatId, userId, text) {
   // 会话状态
   if (trimmed === '/status' || trimmed === '状态') {
     try {
-      const res = await agentCall('GET', '/api/busy-sessions', null, 5000);
+      const res = await agentCall('GET', '/api/busy-sessions', null, 20000);
       const busy = res.busy || [];
       if (busy.length === 0) {
         await reply(chatId, userId, '⚪ 当前没有会话正在执行。');
