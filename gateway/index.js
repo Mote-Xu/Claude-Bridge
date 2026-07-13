@@ -262,6 +262,9 @@ async function handleMessage(chatId, userId, text) {
       ([name]) => name.toLowerCase() === target.toLowerCase()
     );
     if (match) {
+      // 先把旧项目所有活跃会话结束，防止跨项目污染
+      const oldActive = getActiveSessions(chatId);
+      for (const s of oldActive) updateSessionStatus(s.id, 'ended');
       addGroup(chatId, match[0], match[1]);
       await reply(chatId, userId, `🔄 已切换到项目：${match[0]}`);
     } else {
