@@ -643,19 +643,18 @@ app.post('/api/sync-chronicles', async (req, res) => {
   }
 });
 
-// GET /api/busy-sessions — JSONL 修改时间 + Agent Busy set 双信号
+// GET /api/busy-sessions — 三信号判断会话是否正在执行
 const BUSY_MTIME_MS = 30000;
 app.get('/api/busy-sessions', (req, res) => {
   try {
     const now = Date.now();
-    const busyList = [];
+    const busySet = new Map(); // sid → { name, project, why }
 
     // 信号1: Agent 自己驱动的（Bridge/API 路径，精确）
     for (const sid of sessionBusy) {
-      busyList.push({ id: sid, name: sid.slice(0, 8), project: '', source: 'agent' });
+      busySet.set(sid, { name: sid.slice(0, 8), project: '', why: 'agent' });
     }
 
-    // 信号2: JSONL 最近 30 秒内有写入
     if (fs.existsSync(PROJECTS_DIR)) {
       for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
         if (!d.isDirectory()) continue;
@@ -666,13 +665,41 @@ app.get('/api/busy-sessions', (req, res) => {
             const jsonlPath = path.join(PROJECTS_DIR, d.name, f);
             let stat;
             try { stat = fs.statSync(jsonlPath); } catch { continue; }
-            if (now - stat.mtimeMs > BUSY_MTIME_MS) continue; // 超过30秒没写入，不忙
+
             const meta = getSessionMeta(jsonlPath, sid);
-            const projectName = meta.projectPath ? meta.projectPath.split('\\').filter(Boolean).pop() : '';
-            busyList.push({ id: sid, name: meta.sessionName || sid.slice(0, 8), project: projectName, source: 'mtime' });
+            const info = { name: meta.sessionName || sid.slice(0, 8),
+              project: meta.projectPath ? meta.projectPath.split('\\').filter(Boolean).pop() : '',
+              why: '' };
+
+            // 信号2: JSONL 最近 30 秒内有写入
+            if (now - stat.mtimeMs <= BUSY_MTIME_MS) {
+              info.why = 'writing';
+              busySet.set(sid, info);
+              continue;
+            }
+
+            // 信号3: 最后一行是 user 但还没有 assistant 回复 = 收到消息正在处理中
+            if (!busySet.has(sid)) {
+              try {
+                const content = fs.readFileSync(jsonlPath, 'utf-8');
+                const lines = content.split('\n').filter(Boolean);
+                if (lines.length > 0) {
+                  const last = JSON.parse(lines[lines.length - 1]);
+                  if (last.type === 'user') {
+                    info.why = 'pending';
+                    busySet.set(sid, info);
+                  }
+                }
+              } catch {}
+            }
           }
         } catch {}
       }
+    }
+
+    const busyList = [];
+    for (const [id, info] of busySet) {
+      busyList.push({ id, name: info.name, project: info.project });
     }
     res.json({ busy: busyList, count: busyList.length });
   } catch (err) {
