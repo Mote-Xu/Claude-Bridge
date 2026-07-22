@@ -694,7 +694,24 @@ app.post('/webhook', async (req, res) => {
   } catch (err) { console.error('Webhook error:', err.message); }
   res.send('success');
 });
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+let publicIp = 'unknown';
+async function refreshPublicIp() {
+  try {
+    const http = require('http');
+    publicIp = await new Promise(r => {
+      http.get('http://ifconfig.me/ip', res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+    });
+  } catch { try {
+    const http = require('http');
+    publicIp = await new Promise(r => {
+      http.get('http://icanhazip.com', res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+    });
+  } catch {} }
+}
+refreshPublicIp();
+setInterval(refreshPublicIp, 3600000); // hourly
+
+app.get('/health', (req, res) => res.json({ status: 'ok', publicIp }));
 
 // POST /api/bridge/ask — 会话给会话发消息的标准入口（对称：发起和回复走同一个 API）
 // 调此接口 → 立刻返回 → Gateway 异步驱动目标会话 → 企微可见
