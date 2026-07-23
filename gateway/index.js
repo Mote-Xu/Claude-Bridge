@@ -699,12 +699,12 @@ async function refreshPublicIp() {
   try {
     const http = require('http');
     publicIp = await new Promise(r => {
-      http.get('http://ifconfig.me/ip', res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+      http.get({ hostname: 'ipv4.icanhazip.com', family: 4 }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
     });
   } catch { try {
     const http = require('http');
     publicIp = await new Promise(r => {
-      http.get('http://icanhazip.com', res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+      http.get({ hostname: 'ifconfig.me', path: '/ip', family: 4 }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
     });
   } catch {} }
 }
