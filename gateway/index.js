@@ -694,24 +694,35 @@ app.post('/webhook', async (req, res) => {
   } catch (err) { console.error('Webhook error:', err.message); }
   res.send('success');
 });
-let publicIp = 'unknown';
-async function refreshPublicIp() {
+async function getPublicIp() {
+  const http = require('http');
+  // icanhazip.com
   try {
-    const http = require('http');
-    publicIp = await new Promise(r => {
-      http.get({ hostname: 'ipv4.icanhazip.com', family: 4 }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+    return await new Promise((resolve, reject) => {
+      const req = http.get({ hostname: 'ipv4.icanhazip.com', family: 4 }, res => {
+        let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d.trim()));
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
     });
-  } catch { try {
-    const http = require('http');
-    publicIp = await new Promise(r => {
-      http.get({ hostname: 'ifconfig.me', path: '/ip', family: 4 }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>r(d.trim())); });
+  } catch {}
+  // fallback: ifconfig.me
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = http.get({ hostname: 'ifconfig.me', path: '/ip', family: 4 }, res => {
+        let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d.trim()));
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
     });
-  } catch {} }
+  } catch {}
+  return 'unknown';
 }
-refreshPublicIp();
-setInterval(refreshPublicIp, 3600000); // hourly
 
-app.get('/health', (req, res) => res.json({ status: 'ok', publicIp }));
+app.get('/health', async (req, res) => {
+  const publicIp = await getPublicIp();
+  res.json({ status: 'ok', publicIp });
+});
 
 // POST /api/bridge/ask — 会话给会话发消息的标准入口（对称：发起和回复走同一个 API）
 // 调此接口 → 立刻返回 → Gateway 异步驱动目标会话 → 企微可见
