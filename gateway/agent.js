@@ -27,8 +27,26 @@ function agentCall(method, path, body = null, timeout = AGENT_TIMEOUT) {
 }
 
 async function execClaude(sessionId, message, options = {}) {
-  const res = await agentCall('POST', '/api/run-claude', { sessionId, message, cwd: options.cwd }, 185000);
-  return { stdout: res.stdout || '', stderr: res.stderr || '', code: res.code || 0, newSessionId: res.newSessionId || null };
+  const body = { sessionId, message, cwd: options.cwd };
+  if (options.platform) body.platform = options.platform;
+  // TG 流式模式超时更短（每次里程碑 120s），非 TG 保持 185s
+  const timeout = options.platform === 'telegram' ? 185000 : 185000;
+  const res = await agentCall('POST', '/api/run-claude', body, timeout);
+  return {
+    status: res.status || 'completed',
+    stdout: res.stdout || '',
+    stderr: res.stderr || '',
+    code: res.code || 0,
+    newSessionId: res.newSessionId || null,
+    pendingSessionId: res.pendingSessionId || null,
+    prompt: res.prompt || null,
+  };
+}
+
+// writeStdin — TG 权限交互第二阶段：再调一次 execClaude 写 yes/no
+// 两阶段模型：每次调 /api/run-claude 都是一次完整的 stdin→stdout 往返
+async function writeStdin(sessionId, input, cwd) {
+  return execClaude(sessionId, input, { cwd, platform: 'telegram' });
 }
 
 async function healthCheck() {
@@ -83,4 +101,4 @@ async function reloadAgent() {
   try { await agentCall('POST', '/api/reload', null, 5000); return true; } catch { return false; }
 }
 
-module.exports = { execClaude, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, recordChronicle, syncChronicles, reloadAgent };
+module.exports = { execClaude, writeStdin, healthCheck, getProjects, listSessions, findLatestSession, getSessionIds, agentCall, recordChronicle, syncChronicles, reloadAgent };

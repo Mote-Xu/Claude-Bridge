@@ -3,7 +3,7 @@
 // 开机自启：把 start.bat 快捷方式放到 shell:startup 文件夹
 
 const express = require('express');
-const { exec, execSync } = require('child_process');
+const { exec, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -15,6 +15,17 @@ const CLAUDE_BIN = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.
 // 会话执行状态追踪（覆盖所有路径：VS Code、Bridge、API）
 const sessionBusy = new Set(); // claude session UUID → true
 const runningProcs = new Map(); // sessionId → ChildProcess（用于 /api/stop-claude）
+
+// ── 崩溃日志 + 保活：记录异常但不退出，VBS 看门狗负责重启 ──
+const CRASH_LOG = path.join(os.tmpdir(), 'claude-bridge-agent-crash.log');
+process.on('uncaughtException', err => {
+  try { fs.appendFileSync(CRASH_LOG, `${new Date().toISOString()} UNCAUGHT: ${err.stack || err.message}\n`); } catch {}
+  console.error('FATAL uncaughtException:', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  try { fs.appendFileSync(CRASH_LOG, `${new Date().toISOString()} UNHANDLED_REJECTION: ${reason?.stack || reason}\n`); } catch {}
+  console.error('FATAL unhandledRejection:', reason);
+});
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -124,118 +135,226 @@ app.post('/api/discover', (req, res) => {
   }
 });
 
+// ── 权限检测 ──────────────────────────────────────────────
+// Claude Code 权限提示特征：⏺ Do you want to proceed? (y/n)
+// 精确匹配：末尾出现 ? (y/n) 或 proceed? —— 避免 Claude 对话中提及 (y/n) 误触发
+function detectPermissionPrompt(text) {
+  if (!text) return false;
+  // 只检查末尾 300 字符 —— 权限提示总是在最末尾，Claude 等待输入
+  const tail = text.slice(-300);
+  return /\?\s*\(y\/n\)\s*$/i.test(tail) || /\bproceed\?/i.test(tail);
+}
+
+// 构建完成响应
+function buildCompletedResponse(procState, cwd, originalSessionId) {
+  let newSessionId = null;
+  if (!originalSessionId && cwd) {
+    try {
+      const encoded = encodeProject(cwd);
+      const projDir = path.join(PROJECTS_DIR, encoded);
+      if (fs.existsSync(projDir)) {
+        const files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
+        if (files.length > 0) {
+          let latest = null, latestTime = 0;
+          for (const f of files) {
+            const stat = fs.statSync(path.join(projDir, f));
+            if (stat.mtimeMs > latestTime) { latestTime = stat.mtimeMs; latest = f; }
+          }
+          newSessionId = latest ? latest.replace('.jsonl', '') : null;
+        }
+      }
+    } catch {}
+  }
+  try { upsertCastBridge(cwd, originalSessionId || newSessionId); } catch {}
+  return {
+    status: 'completed',
+    stdout: procState.stdoutBuf || '',
+    stderr: procState.stderrBuf || '',
+    code: procState.exitCode || 0,
+    newSessionId,
+  };
+}
+
 // POST /api/run-claude — 执行 Claude Code（stdin 直连，不经过 bat 文件）
-app.post('/api/run-claude', (req, res) => {
-  const { sessionId, message, cwd } = req.body;
+// platform=telegram 时使用 spawn + 权限检测；否则使用 exec（向后兼容）
+app.post('/api/run-claude', async (req, res) => {
+  const { sessionId, message, cwd, platform } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
 
-  try {
-    // Step 1: 注册会话到 Claude Code 索引
-    if (sessionId) {
-      try {
-        if (cwd) {
-          const sessionsDir2 = path.join(os.homedir(), '.claude', 'sessions');
-          // 删掉该会话的旧索引条目（避免重复）
-          if (fs.existsSync(sessionsDir2)) {
-            for (const f of fs.readdirSync(sessionsDir2)) {
-              if (!f.endsWith('.json')) continue;
-              try {
-                const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir2, f), 'utf-8'));
-                if (entry.sessionId === sessionId) fs.unlinkSync(path.join(sessionsDir2, f));
-              } catch {}
-            }
-          }
-          // 从 JSONL 里取元数据
-          const encoded = encodeProject(cwd);
-          const projDir = path.join(PROJECTS_DIR, encoded);
-          let version = '2.1.198', startedAt = Date.now(), entrypoint = 'claude-vscode', aiTitle = '';
-          if (fs.existsSync(projDir)) {
-            const jsonlFile = path.join(projDir, `${sessionId}.jsonl`);
-            if (fs.existsSync(jsonlFile)) {
-              try {
-                const content = fs.readFileSync(jsonlFile, 'utf-8');
-                const lines = content.split('\n').slice(0, 5);
-                for (const line of lines) {
-                  try {
-                    const j = JSON.parse(line);
-                    if (j.version) version = j.version;
-                    if (j.timestamp) startedAt = new Date(j.timestamp).getTime();
-                    if (j.entrypoint) entrypoint = j.entrypoint;
-                    if (j.aiTitle) aiTitle = j.aiTitle;
-                  } catch {}
-                }
-              } catch {}
-            }
-          }
-          // 写入索引（唯一文件名：agentPID-sessionShort）
-          if (!fs.existsSync(sessionsDir2)) fs.mkdirSync(sessionsDir2, { recursive: true });
-          const indexEntry = {
-            pid: process.pid,
-            sessionId,
-            cwd,
-            startedAt,
-            version,
-            peerProtocol: 1,
-            kind: 'interactive',
-            entrypoint,
-            name: aiTitle ? `bridge-${aiTitle.slice(0, 30)}` : `bridge-${sessionId.slice(0, 8)}`,
-            nameSource: 'derived',
-          };
-          const indexFile = path.join(sessionsDir2, `${process.pid}-${sessionId.slice(0, 8)}.json`);
-          fs.writeFileSync(indexFile, JSON.stringify(indexEntry), 'utf-8');
+  // ── 会话索引注册（TG 和非 TG 共用） ──
+  if (sessionId && cwd) {
+    try {
+      const sessionsDir2 = path.join(os.homedir(), '.claude', 'sessions');
+      if (fs.existsSync(sessionsDir2)) {
+        for (const f of fs.readdirSync(sessionsDir2)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const entry = JSON.parse(fs.readFileSync(path.join(sessionsDir2, f), 'utf-8'));
+            if (entry.sessionId === sessionId) fs.unlinkSync(path.join(sessionsDir2, f));
+          } catch {}
         }
-      } catch {} // 索引注册失败不阻塞
-    }
-
-    // Step 3: stdin 直连 Claude（不经过 bat/pipe，输出不丢，kill 干净）
-    const claudeCmd = sessionId
-      ? `"${CLAUDE_BIN}" --resume "${sessionId}"`
-      : `"${CLAUDE_BIN}"`;
-    const child = exec(claudeCmd, {
-      cwd: cwd || undefined,
-      timeout: 180000,
-      maxBuffer: 10 * 1024 * 1024,
-      encoding: 'utf-8',
-      env: { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' },
-    }, (err, stdout, stderr) => {
-      if (sessionId) { sessionBusy.delete(sessionId); runningProcs.delete(sessionId); }
-
-      let newSessionId = null;
-      if (!sessionId && cwd) {
-        try {
-          const encoded = encodeProject(cwd);
-          const projDir = path.join(PROJECTS_DIR, encoded);
-          if (fs.existsSync(projDir)) {
-            const files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
-            if (files.length > 0) {
-              let latest = null, latestTime = 0;
-              for (const f of files) {
-                const stat = fs.statSync(path.join(projDir, f));
-                if (stat.mtimeMs > latestTime) { latestTime = stat.mtimeMs; latest = f; }
-              }
-              newSessionId = latest ? latest.replace('.jsonl', '') : null;
-            }
-          }
-        } catch {}
       }
+      const encoded = encodeProject(cwd);
+      const projDir = path.join(PROJECTS_DIR, encoded);
+      let version = '2.1.198', startedAt = Date.now(), entrypoint = 'claude-vscode', aiTitle = '';
+      if (fs.existsSync(projDir)) {
+        const jsonlFile = path.join(projDir, `${sessionId}.jsonl`);
+        if (fs.existsSync(jsonlFile)) {
+          try {
+            const content = fs.readFileSync(jsonlFile, 'utf-8');
+            const lines = content.split('\n').slice(0, 5);
+            for (const line of lines) {
+              try {
+                const j = JSON.parse(line);
+                if (j.version) version = j.version;
+                if (j.timestamp) startedAt = new Date(j.timestamp).getTime();
+                if (j.entrypoint) entrypoint = j.entrypoint;
+                if (j.aiTitle) aiTitle = j.aiTitle;
+              } catch {}
+            }
+          } catch {}
+        }
+      }
+      if (!fs.existsSync(sessionsDir2)) fs.mkdirSync(sessionsDir2, { recursive: true });
+      const indexEntry = {
+        pid: process.pid,
+        sessionId,
+        cwd,
+        startedAt,
+        version,
+        peerProtocol: 1,
+        kind: 'interactive',
+        entrypoint,
+        name: aiTitle ? `bridge-${aiTitle.slice(0, 30)}` : `bridge-${sessionId.slice(0, 8)}`,
+        nameSource: 'derived',
+      };
+      const indexFile = path.join(sessionsDir2, `${process.pid}-${sessionId.slice(0, 8)}.json`);
+      fs.writeFileSync(indexFile, JSON.stringify(indexEntry), 'utf-8');
+    } catch {}
+  }
 
-      try { upsertCastBridge(cwd, sessionId || newSessionId); } catch {}
+  // ── 非 TG：显式 spawn cmd.exe（不用 exec），避免 Node 24 cwd 跨盘符 ENOENT ──
+  if (platform !== 'telegram') {
+    try {
+      const cmdExe2 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
+      const sys322 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
+      const execEnv = { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' };
+      execEnv.PATH = sys322 + ';' + (process.env.PATH || '');
+      const cmdLine2 = sessionId
+        ? `${CLAUDE_BIN} --resume ${sessionId}`
+        : CLAUDE_BIN;
 
-      if (err && !stdout && !stderr) {
-        res.json({ stdout: '', stderr: err.message, code: err.code || 1, newSessionId });
-      } else {
-        res.json({ stdout: stdout || '', stderr: stderr || '', code: err?.code || 0, newSessionId });
+      // Node 24 spawn bug: cwd 跨盘符会 ENOENT。先 chdir 再 spawn
+      const prevCwd2 = process.cwd();
+      if (cwd) { try { process.chdir(cwd); } catch {} }
+      const child = spawn(cmdExe2, ['/d', '/s', '/c', cmdLine2], {
+        env: execEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      if (cwd) { try { process.chdir(prevCwd2); } catch {} }
+
+      let stdout2 = '', stderr2 = '';
+      child.stdout.on('data', d => stdout2 += d.toString('utf-8'));
+      child.stderr.on('data', d => stderr2 += d.toString('utf-8'));
+      child.on('error', err => {
+        if (sessionId) { sessionBusy.delete(sessionId); runningProcs.delete(sessionId); }
+        res.json({ status: 'completed', stdout: '', stderr: err.message, code: 1, newSessionId: null });
+      });
+      child.on('exit', code => {
+        if (sessionId) { sessionBusy.delete(sessionId); runningProcs.delete(sessionId); }
+        let newSessionId = null;
+        if (!sessionId && cwd) {
+          try {
+            const encoded = encodeProject(cwd);
+            const projDir = path.join(PROJECTS_DIR, encoded);
+            if (fs.existsSync(projDir)) {
+              const files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
+              if (files.length > 0) {
+                let latest = null, latestTime = 0;
+                for (const f of files) {
+                  const stat = fs.statSync(path.join(projDir, f));
+                  if (stat.mtimeMs > latestTime) { latestTime = stat.mtimeMs; latest = f; }
+                }
+                newSessionId = latest ? latest.replace('.jsonl', '') : null;
+              }
+            }
+          } catch {}
+        }
+        try { upsertCastBridge(cwd, sessionId || newSessionId); } catch {}
+        res.json({ status: 'completed', stdout: stdout2, stderr: stderr2, code: code || 0, newSessionId });
+      });
+
+      child.stdin.write(message);
+      child.stdin.end();
+      if (sessionId) { sessionBusy.add(sessionId); runningProcs.set(sessionId, child); }
+    } catch (err) {
+      res.status(500).json({ status: 'completed', stdout: '', stderr: err.message, code: 1 });
+    }
+    return;
+  }
+
+  // ── TG：spawn + stdin 不 end + stdout 实时权限检测 ──
+  const trackId = sessionId || `tg-${Date.now()}`;
+  try {
+    const cmdExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
+    const sys32 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
+    const execEnv = { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' };
+    execEnv.PATH = sys32 + ';' + (process.env.PATH || '');
+    const cmdLine = sessionId
+      ? `${CLAUDE_BIN} --resume ${sessionId}`
+      : CLAUDE_BIN;
+
+    const prevCwd = process.cwd();
+    if (cwd) { try { process.chdir(cwd); } catch {} }
+    const child = spawn(cmdExe, ['/d', '/s', '/c', cmdLine], {
+      env: execEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (cwd) { try { process.chdir(prevCwd); } catch {} }
+
+    const procState = {
+      child, stdoutBuf: '', stderrBuf: '',
+      state: 'running', exitCode: null, waitResolve: null,
+    };
+    runningProcs.set(trackId, procState);
+    if (sessionId) sessionBusy.add(sessionId);
+
+    child.stdout.on('data', d => {
+      procState.stdoutBuf += d.toString('utf-8');
+      if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
+        procState.state = 'waiting_permission';
+        if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: trackId }); }
       }
     });
+    child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
+    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } });
+    child.on('exit', code => {
+      procState.state = 'exited'; procState.exitCode = code;
+      if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); }
+      setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000);
+    });
 
-    // 把消息写入 stdin
-    child.stdin.write(message);
+    // 180s 超时
+    const timeout = setTimeout(() => {
+      if (procState.state !== 'exited') { try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {} procState.state = 'exited'; procState.exitCode = 1; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1 }); } }
+    }, 180000);
+
+    child.stdin.write(message + '\n');
     child.stdin.end();
+    // TODO: 权限交互 — stdin 需保持开才能写 yes/no。
+    // 临时方案：stdin.end() 让消息先通。后续可用 --print 或双进程模式
 
-    if (sessionId) { sessionBusy.add(sessionId); runningProcs.set(sessionId, child); }
-
+    const result = await new Promise(resolve => {
+      if (procState.state === 'exited') resolve(buildCompletedResponse(procState, cwd, sessionId));
+      else if (procState.state === 'waiting_permission') resolve({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: trackId });
+      else procState.waitResolve = resolve;
+    });
+    clearTimeout(timeout);
+    res.json(result);
   } catch (err) {
-    res.status(500).json({ stdout: '', stderr: err.message, code: 1 });
+    runningProcs.delete(trackId);
+    if (sessionId) sessionBusy.delete(sessionId);
+    res.status(500).json({ status: 'completed', stdout: '', stderr: err.message, code: 1 });
   }
 });
 
@@ -759,10 +878,13 @@ app.post('/api/bridge/ask', (req, res) => {
 app.post('/api/stop-claude', (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-  const child = runningProcs.get(sessionId);
-  if (child) {
-    // child.pid 是 claude.exe 的 PID（stdin 直连，无 cmd 中间层）
+  const entry = runningProcs.get(sessionId);
+  // entry 可能是 ChildProcess（非 TG exec 模式）或 procState 对象（TG spawn 模式）
+  const child = entry?.child || entry; // procState 对象有 .child 属性；旧格式直接是 ChildProcess
+  if (child && typeof child.pid === 'number') {
     try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
+    // 清理 procState
+    if (entry?.state) entry.state = 'exited';
     runningProcs.delete(sessionId);
     sessionBusy.delete(sessionId);
     res.json({ status: 'killed', pid: child.pid });

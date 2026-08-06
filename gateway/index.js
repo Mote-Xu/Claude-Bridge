@@ -5,7 +5,7 @@ const config = require('./config');
 const { init: dbInit, getGroup, addGroup, removeGroup, getGroupPlatform, createSession, upsertSession, getSessionByName, getSessionById, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
 const telegram = require('./telegram');
-const { execClaude, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle, syncChronicles } = require('./agent');
+const { execClaude, writeStdin, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle, syncChronicles } = require('./agent');
 
 wecom.init(config);
 telegram.init(config);
@@ -15,6 +15,10 @@ dbInit(config.dbPath);
 // 防止同一会话被同时执行（撞车）。Gateway 单进程，内存 Set 足够
 const sessionBusy = new Set();   // session DB id → true
 const sessionBusyUuids = new Set(); // claude_session_id (UUID) → true
+
+// ========== TG 权限交互状态 ==========
+// TG 用户在 Claude 权限提示时点击 [批准]/[拒绝] 按钮后，Gateway 继续驱动
+const tgPermissionState = new Map(); // chatId → { pendingSessionId, sessionName, tgPendingMsgId, group, s, existingSession, isNew, accumulatedOutput, claudeSid, permissionCount }
 
 function markBusy(sessionId, uuid) {
   sessionBusy.add(sessionId);
@@ -208,8 +212,106 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       }
       return;
     }
+    // y:ok / n:no → TG 权限批准/拒绝
+    if (trimmed === 'y:ok' || trimmed === 'n:no') {
+      const permState = tgPermissionState.get(chatId);
+      if (!permState) { await rp('⌛ 权限请求已过期'); return; }
+      tgPermissionState.delete(chatId);
+
+      const input = trimmed === 'y:ok' ? 'yes' : 'no';
+      const { pendingSessionId, sessionName, tgPendingMsgId, group: permGroup, s: permS, existingSession, isNew, accumulatedOutput, claudeSid } = permState;
+
+      // 标记"处理中"
+      if (tgPendingMsgId) {
+        telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${sessionName}:\n⏳ 处理中...`, null, true).catch(() => {});
+      }
+
+      try {
+        const result = await writeStdin(pendingSessionId, input, permGroup.project_path);
+
+        if (result.status === 'permission_needed') {
+          // 又一次权限提示 —— 重新显示按钮
+          tgPermissionState.set(chatId, {
+            ...permState,
+            pendingSessionId: result.pendingSessionId || pendingSessionId,
+            accumulatedOutput: result.stdout,
+            permissionCount: (permState.permissionCount || 0) + 1,
+          });
+          const permKb = telegram.buildInlineKeyboard([
+            [{ text: '✅ 批准', data: 'y:ok' }, { text: '❌ 拒绝', data: 'n:no' }],
+            [{ text: '⏹ 停止', data: 'x:stop' }],
+          ], 2);
+          const tail = (result.stdout || '').slice(-1500);
+          if (tgPendingMsgId) {
+            await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${sessionName}:\n${tail}\n\n_需要你的批准_`, permKb, false);
+          } else {
+            await rp(`Claude·${sessionName}:\n${tail}\n\n_需要你的批准_`, permKb);
+          }
+          return;
+        }
+
+        // 完成
+        const fullOutput = result.stdout || result.stderr || '(无输出)';
+        const output = fullOutput.slice(0, 3800);
+        auditLog(chatId, permS?.id || null, 'out', output);
+
+        recordChronicle(permGroup.project_path, sessionName, 'in', `[permission: ${input}]`, 'user');
+        recordChronicle(permGroup.project_path, sessionName, 'out', fullOutput, 'user');
+
+        if (permS) {
+          touchSession(permS.id);
+          if (result.newSessionId) updateClaudeSessionId(permS.id, result.newSessionId);
+        }
+
+        if (tgPendingMsgId && permS && !isBusy(permS.id)) {
+          const partial = output || '(无输出)';
+          await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${sessionName}:\n${partial}\n\n⏹ 已中断`, null, true);
+        } else if (tgPendingMsgId) {
+          await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${sessionName}:\n${output}`, null, true);
+        } else {
+          await rp(`Claude·${sessionName}:\n${output}`);
+        }
+
+        // 释放锁 + 排空队列
+        if (permS) {
+          markIdle(permS.id, permS.claude_session_id);
+          drainSessionQueue(chatId, permS.id, permGroup).catch(e => console.error('Session drain error:', e));
+        }
+      } catch (err) {
+        if (tgPendingMsgId) {
+          await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${sessionName}:\n❌ ${err.message.slice(0, 500)}`, null, true);
+        } else {
+          await rp(`Claude·${sessionName}:\n❌ ${err.message.slice(0, 500)}`);
+        }
+        if (permS) {
+          markIdle(permS.id, permS.claude_session_id);
+          drainSessionQueue(chatId, permS.id, permGroup).catch(e => console.error('Session drain error:', e));
+        }
+      }
+      return;
+    }
+
     // x:stop → 停止当前活跃会话（杀 Claude 进程 + 显示部分输出）
     if (trimmed === 'x:stop') {
+      // ── 如果在 TG 权限等待中，直接用 pendingSessionId 杀进程 ──
+      const permState = tgPermissionState.get(chatId);
+      if (permState) {
+        tgPermissionState.delete(chatId);
+        if (permState.pendingSessionId) {
+          agentCall('POST', '/api/stop-claude', { sessionId: permState.pendingSessionId }, 5000).catch(() => {});
+        }
+        if (permState.s) {
+          updateSessionStatus(permState.s.id, 'idle');
+          markIdle(permState.s.id, permState.s.claude_session_id);
+          drainSessionQueue(chatId, permState.s.id, permState.group).catch(e => console.error('Session drain error:', e));
+        }
+        if (permState.tgPendingMsgId) {
+          const partial = (permState.accumulatedOutput || '(无输出)').slice(0, 3500);
+          telegram.editMessageText(chatId, permState.tgPendingMsgId, `Claude·${permState.sessionName}:\n${partial}\n\n⏹ 已中断`, null, true).catch(() => {});
+        }
+        return;
+      }
+
       const activeStop = getActiveSessions(chatId);
       for (const as of activeStop) {
         updateSessionStatus(as.id, 'idle');
@@ -454,6 +556,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     if (match) {
       clearAllKeyboards(chatId);
       callbackCache.delete(chatId);
+      tgPermissionState.delete(chatId);
       // 先把旧项目所有活跃会话结束，防止跨项目污染
       const oldActive = getActiveSessions(chatId);
       for (const s of oldActive) updateSessionStatus(s.id, 'ended');
@@ -470,6 +573,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     if (group) {
       clearAllKeyboards(chatId);
       callbackCache.delete(chatId);
+      tgPermissionState.delete(chatId);
       removeGroup(chatId);
       await rp('👋 已退出项目。发送项目名重新接入');
     } else {
@@ -947,7 +1051,34 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
   }
 
   try {
-    const result = await execClaude(claudeSid, message, { cwd: group.project_path });
+    const result = await execClaude(claudeSid, message, { cwd: group.project_path, platform: pf });
+
+    // ── TG 权限交互：检测到 Claude 需要批准 ──
+    if (result.status === 'permission_needed' && pf === 'telegram') {
+      tgPermissionState.set(chatId, {
+        pendingSessionId: result.pendingSessionId,
+        sessionName: name,
+        tgPendingMsgId,
+        group,
+        s,
+        existingSession,
+        isNew,
+        accumulatedOutput: result.stdout,
+        claudeSid,
+        permissionCount: 1,
+      });
+      const permKb = telegram.buildInlineKeyboard([
+        [{ text: '✅ 批准', data: 'y:ok' }, { text: '❌ 拒绝', data: 'n:no' }],
+        [{ text: '⏹ 停止', data: 'x:stop' }],
+      ], 2);
+      const tail = (result.stdout || '').slice(-1500);
+      if (tgPendingMsgId) {
+        await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${tail}\n\n_需要你的批准_`, permKb, false);
+      }
+      // 不释放锁 —— 等待用户按钮响应
+      return;
+    }
+
     const fullOutput = result.stdout || result.stderr || '(无输出)';
     const output = fullOutput.slice(0, 3800);
     auditLog(chatId, existingSession?.id || null, 'out', output);
