@@ -14,6 +14,12 @@ module.exports = {
     encodingAESKey: process.env.WECOM_AES_KEY || '',
   },
 
+  // Telegram Bot
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    webhookPath: process.env.TELEGRAM_WEBHOOK_PATH || '/telegram-webhook',
+  },
+
   // Windows Agent
   agent: {
     host: process.env.AGENT_HOST || '100.80.205.79',

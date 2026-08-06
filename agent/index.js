@@ -14,6 +14,7 @@ const CLAUDE_BIN = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.
 
 // 会话执行状态追踪（覆盖所有路径：VS Code、Bridge、API）
 const sessionBusy = new Set(); // claude session UUID → true
+const runningProcs = new Map(); // sessionId → ChildProcess（用于 /api/stop-claude）
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -123,19 +124,13 @@ app.post('/api/discover', (req, res) => {
   }
 });
 
-// POST /api/run-claude — 执行 Claude Code
+// POST /api/run-claude — 执行 Claude Code（stdin 直连，不经过 bat 文件）
 app.post('/api/run-claude', (req, res) => {
   const { sessionId, message, cwd } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
 
-  const msgFile = path.join(os.tmpdir(), 'bridge-msg.txt');
-  const batFile = path.join(os.tmpdir(), 'bridge-run.bat');
-
   try {
-    // Step 1: 直接写文件（本地无编码问题）
-    fs.writeFileSync(msgFile, message, 'utf-8');
-
-    // Step 2: 注册会话到 Claude Code 索引（--resume 查索引不查文件）
+    // Step 1: 注册会话到 Claude Code 索引
     if (sessionId) {
       try {
         if (cwd) {
@@ -192,22 +187,19 @@ app.post('/api/run-claude', (req, res) => {
       } catch {} // 索引注册失败不阻塞
     }
 
-    // Step 3: 写 bat 文件执行 Claude（避免 cmd 引号嵌套）
-    // CI=true 可能让 Claude CLI 以非交互模式创建会话，VS Code 更可能识别
-    const lines = ['@echo off', 'set CI=true', 'set CLAUDE_NO_TUI=1'];
-    if (cwd) lines.push(`cd /d "${cwd}"`);
-    lines.push(`type "${msgFile}" | "${CLAUDE_BIN}"${sessionId ? ` --resume "${sessionId}"` : ''}`);
-    fs.writeFileSync(batFile, lines.join('\r\n') + '\r\n', 'utf-8');
+    // Step 3: stdin 直连 Claude（不经过 bat/pipe，输出不丢，kill 干净）
+    const claudeCmd = sessionId
+      ? `"${CLAUDE_BIN}" --resume "${sessionId}"`
+      : `"${CLAUDE_BIN}"`;
+    const child = exec(claudeCmd, {
+      cwd: cwd || undefined,
+      timeout: 180000,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: 'utf-8',
+      env: { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' },
+    }, (err, stdout, stderr) => {
+      if (sessionId) { sessionBusy.delete(sessionId); runningProcs.delete(sessionId); }
 
-    if (sessionId) sessionBusy.add(sessionId);
-
-    exec(batFile, { timeout: 180000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' }, (err, stdout, stderr) => {
-      if (sessionId) sessionBusy.delete(sessionId);
-      // 清理临时文件
-      try { fs.unlinkSync(msgFile); } catch {}
-      try { fs.unlinkSync(batFile); } catch {}
-
-      // Step 4: 新会话时找到刚创建的 session ID
       let newSessionId = null;
       if (!sessionId && cwd) {
         try {
@@ -216,35 +208,33 @@ app.post('/api/run-claude', (req, res) => {
           if (fs.existsSync(projDir)) {
             const files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
             if (files.length > 0) {
-              // 取最新修改的文件
               let latest = null, latestTime = 0;
               for (const f of files) {
                 const stat = fs.statSync(path.join(projDir, f));
-                if (stat.mtimeMs > latestTime) {
-                  latestTime = stat.mtimeMs;
-                  latest = f;
-                }
+                if (stat.mtimeMs > latestTime) { latestTime = stat.mtimeMs; latest = f; }
               }
               newSessionId = latest ? latest.replace('.jsonl', '') : null;
             }
           }
-        } catch {} // 找不到不影响主流程
+        } catch {}
       }
 
-      // 把这次 Bridge 会话登记进项目根 CAST_OF_SESSIONS.md（标 🌉 Bridge）
       try { upsertCastBridge(cwd, sessionId || newSessionId); } catch {}
 
-      if (err && !stdout) {
+      if (err && !stdout && !stderr) {
         res.json({ stdout: '', stderr: err.message, code: err.code || 1, newSessionId });
       } else {
         res.json({ stdout: stdout || '', stderr: stderr || '', code: err?.code || 0, newSessionId });
       }
     });
 
+    // 把消息写入 stdin
+    child.stdin.write(message);
+    child.stdin.end();
+
+    if (sessionId) { sessionBusy.add(sessionId); runningProcs.set(sessionId, child); }
+
   } catch (err) {
-    // 同步部分出错（写文件失败等）
-    try { fs.unlinkSync(msgFile); } catch {}
-    try { fs.unlinkSync(batFile); } catch {}
     res.status(500).json({ stdout: '', stderr: err.message, code: 1 });
   }
 });
@@ -419,10 +409,15 @@ app.post('/api/session-preview', (req, res) => {
       rounds.pop();
     }
 
-    // 取最近 3 轮
+    // 最近 3 轮（摘要用，截断到 100 字）
     const recentRounds = rounds.slice(-3).map(r => ({
       user: r.user.slice(0, 100),
       assistant: r.assistant ? r.assistant.slice(0, 100) : '(未回复)',
+    }));
+    // 全部轮次（TG 分页预览用，截断到 500 字/条）
+    const allRounds = rounds.map(r => ({
+      user: r.user.slice(0, 500),
+      assistant: r.assistant ? r.assistant.slice(0, 500) : '(未回复)',
     }));
 
     // 尝试从 session index 读取标题
@@ -450,6 +445,7 @@ app.post('/api/session-preview', (req, res) => {
       totalLines: lines.length,
       topicMsgs: allUserMsgs.slice(0, 3),
       recentRounds,
+      allRounds,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -644,7 +640,7 @@ app.post('/api/sync-chronicles', async (req, res) => {
 });
 
 // GET /api/busy-sessions — 三信号判断会话是否正在执行
-const BUSY_MTIME_MS = 30000;
+const BUSY_MTIME_MS = 10000;
 app.get('/api/busy-sessions', (req, res) => {
   try {
     const now = Date.now();
@@ -678,8 +674,8 @@ app.get('/api/busy-sessions', (req, res) => {
               continue;
             }
 
-            // 信号3: 最后一行是 user 但还没有 assistant 回复 = 收到消息正在处理中
-            if (!busySet.has(sid)) {
+            // 信号3: 最后一行是 user + 文件最近 5 分钟有写入 = 收到消息正在处理中
+            if (!busySet.has(sid) && (now - stat.mtimeMs <= 300000)) {
               try {
                 const content = fs.readFileSync(jsonlPath, 'utf-8');
                 const lines = content.split('\n').filter(Boolean);
@@ -757,6 +753,35 @@ app.post('/api/bridge/ask', (req, res) => {
   gwReq.on('error', err => res.status(502).json({ error: 'Gateway unreachable: ' + err.message }));
   gwReq.write(data);
   gwReq.end();
+});
+
+// POST /api/stop-claude — 强制终止正在运行的 Claude 进程
+app.post('/api/stop-claude', (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const child = runningProcs.get(sessionId);
+  if (child) {
+    // child.pid 是 claude.exe 的 PID（stdin 直连，无 cmd 中间层）
+    try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
+    runningProcs.delete(sessionId);
+    sessionBusy.delete(sessionId);
+    res.json({ status: 'killed', pid: child.pid });
+  } else {
+    // fallback: 按 session UUID 搜 claude 命令行
+    try {
+      const result = execSync(
+        `wmic process where "name='claude.exe' and commandline like '%${sessionId}%'" get processid`,
+        { timeout: 5000, windowsHide: true, encoding: 'utf-8' }
+      );
+      const pids = result.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
+      for (const pid of pids) {
+        try { execSync(`taskkill /f /pid ${pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+      }
+      res.json({ status: 'killed_by_search', count: pids.length });
+    } catch {
+      res.json({ status: 'not_found' });
+    }
+  }
 });
 
 // POST /api/kill-vscode — 手动关闭 VS Code

@@ -11,6 +11,7 @@ function init(dbPath) {
       chat_id TEXT PRIMARY KEY,
       project_name TEXT NOT NULL,
       project_path TEXT NOT NULL,
+      platform TEXT DEFAULT 'wecom',
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -53,6 +54,9 @@ function init(dbPath) {
     );
   `);
 
+  // 迁移：给已有 groups 表加 platform 列（如果不存在）
+  try { db.exec("ALTER TABLE groups ADD COLUMN platform TEXT DEFAULT 'wecom'"); } catch {}
+
   return db;
 }
 
@@ -63,9 +67,13 @@ function getGroup(chatId) {
 function getGroupByProjectPath(projectPath) {
   return db.prepare('SELECT * FROM groups WHERE project_path = ? ORDER BY created_at DESC LIMIT 1').get(projectPath);
 }
-function addGroup(chatId, projectName, projectPath) {
-  return db.prepare('INSERT OR REPLACE INTO groups (chat_id, project_name, project_path) VALUES (?, ?, ?)')
-    .run(chatId, projectName, projectPath);
+function addGroup(chatId, projectName, projectPath, platform) {
+  return db.prepare('INSERT OR REPLACE INTO groups (chat_id, project_name, project_path, platform) VALUES (?, ?, ?, ?)')
+    .run(chatId, projectName, projectPath, platform || 'wecom');
+}
+function getGroupPlatform(chatId) {
+  const row = db.prepare('SELECT platform FROM groups WHERE chat_id = ?').get(chatId);
+  return row?.platform || 'wecom';
 }
 
 // === Sessions ===
@@ -187,7 +195,7 @@ function removeGroup(chatId) {
 
 module.exports = {
   init,
-  getGroup, getGroupByProjectPath, addGroup, removeGroup,
+  getGroup, getGroupByProjectPath, addGroup, removeGroup, getGroupPlatform,
   getAnyChatId,
   getSessionByName, getActiveSessions, listSessions, getSessionById,
   createSession, upsertSession, updateClaudeSessionId, touchSession, updateSessionStatus,
