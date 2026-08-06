@@ -187,6 +187,12 @@ function getHiddenSessionIds(chatId) {
     .all(chatId).map(r => r.claude_session_id);
 }
 
+// 查询所有 Bridge 创建的 claude_session_id（用于标注 [🌉]）
+function getBridgeSessionIds(chatId) {
+  return db.prepare("SELECT DISTINCT claude_session_id FROM sessions WHERE chat_id = ? AND claude_session_id IS NOT NULL AND claude_session_id != ''")
+    .all(chatId).map(r => r.claude_session_id);
+}
+
 // === Remove ===
 function removeGroup(chatId) {
   db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId);
@@ -200,6 +206,6 @@ module.exports = {
   getSessionByName, getActiveSessions, listSessions, getSessionById,
   createSession, upsertSession, updateClaudeSessionId, touchSession, updateSessionStatus,
   enqueueTask, getPendingTasks, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed,
-  hideSession, unhideSession, getHiddenSessionIds,
+  hideSession, unhideSession, getHiddenSessionIds, getBridgeSessionIds,
   auditLog,
 };

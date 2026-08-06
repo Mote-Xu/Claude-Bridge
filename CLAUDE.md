@@ -209,6 +209,7 @@ Windows (Mote-Office):
 4. **先看数据再看代码** — 遇到 bug 不要猜代码逻辑，先 `Read` JSONL/DB 看看实际数据是什么。
 5. **chronicle sync 会「诈尸」已删项目文件夹**（2026-07-09 修复）— `writeChronicle` 从 JSONL 读出老 `cwd`，用 `mkdirSync(recursive)` 建 `.bridge/sessions/`。若用户已删该项目文件夹，recursive 会把整条路径**连同已删的顶层文件夹一起重建**（只剩一个含 `.bridge/` 的空壳）。因为历史会话 JSONL 永远躺在 `~/.claude/projects/`，每次 Bridge 活动 sync 一跑就复活一次。**修复**：`writeChronicle` / `upsertCastBridge` 写入前先 `fs.existsSync(projectPath)`，项目没了就跳过，绝不 mkdir 复活。教训：任何"从持久化的死路径重建目录"的逻辑都要先校验目标是否仍存在。
 6. **chronicle sync 同步全量读是潜在阻塞源（附一次误诊教训）**（2026-07-12 改进）— Agent `syncChronicles()` 每 60 秒被 Gateway 触发，**同步 `readFileSync` 把所有项目所有 JSONL 整个重读一遍**。会话 JSONL 涨大后（马拉松会话可达 MB 级），单线程会被这堆同步读卡住、阻塞 Agent 其它 HTTP 响应——是真实隐患。**改进**：① `fs.statSync` 比大小，JSONL 只追加、大小没变就跳过不读；② 改 `await fs.promises.readFile` 异步读，让出事件循环。**⚠️ 误诊教训**：排查"企微回复变慢/不回"时，我一度咬定是这个 sync 阻塞（还先后错怪过 IPv6、mihomo），全错——真因是**断电后服务器出站网络劣化**（`ping 223.5.5.5` 100% 丢包、qyapi TCP 连不上），重启路由器即好，与代码无关。教训：①定时全量同步读确是事件循环杀手，该修；②但别把"自己能想到的代码问题"当成症状的因，先用证据（`curl -w`/`ping` 一测）定位真因，这次真因在网络层。
+7. **Claude Code v2.1.220+ 所有会话都是 `claude-vscode` entrypoint**（2026-08-06 发现）— 旧版 (v2.1.197) Agent pipe 模式创建的会话 `entrypoint: "sdk-cli"`，VS Code 看不见（幽灵会话）。v2.1.220+ 后不管从哪调用，只要 VS Code 在运行就注册为 `claude-vscode`。**影响**：① 幽灵会话问题自动消失（TG 创建的会话 VS Code 也能看到）② 旧的 entrypoint 区分 Bridge/VS Code 会话的逻辑失效 ③ `[🌉]` 标注改为从 Gateway SQLite `sessions` 表判断（`getBridgeSessionIds()`），不再依赖 JSONL entrypoint。
 
 ### 🆕 新洞察：Bridge = 会话间通信总线
 - Gateway 已在中间，双向都能走消息

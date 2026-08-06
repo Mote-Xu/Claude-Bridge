@@ -2,10 +2,10 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
-const { init: dbInit, getGroup, addGroup, removeGroup, getGroupPlatform, createSession, upsertSession, getSessionByName, getSessionById, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, auditLog } = require('./db');
+const { init: dbInit, getGroup, addGroup, removeGroup, getGroupPlatform, createSession, upsertSession, getSessionByName, getSessionById, getActiveSessions, updateSessionStatus, touchSession, updateClaudeSessionId, enqueueTask, getAllPendingTasks, getSessionPendingTasks, markTaskProcessed, hideSession, unhideSession, getHiddenSessionIds, getBridgeSessionIds, auditLog } = require('./db');
 const wecom = require('./wecom');
 const telegram = require('./telegram');
-const { execClaude, writeStdin, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle, syncChronicles } = require('./agent');
+const { execClaude, execClaudeStream, writeStdin, healthCheck, getProjects, findLatestSession, listSessions, agentCall, recordChronicle, syncChronicles } = require('./agent');
 
 wecom.init(config);
 telegram.init(config);
@@ -19,6 +19,7 @@ const sessionBusyUuids = new Set(); // claude_session_id (UUID) → true
 // ========== TG 权限交互状态 ==========
 // TG 用户在 Claude 权限提示时点击 [批准]/[拒绝] 按钮后，Gateway 继续驱动
 const tgPermissionState = new Map(); // chatId → { pendingSessionId, sessionName, tgPendingMsgId, group, s, existingSession, isNew, accumulatedOutput, claudeSid, permissionCount }
+const streamReqs = new Map(); // sessionId → http.ClientRequest（用于 x:stop 中断流式请求）
 
 function markBusy(sessionId, uuid) {
   sessionBusy.add(sessionId);
@@ -146,6 +147,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
         addGroup(chatId, proj.name, proj.cwd, 'telegram');
         const history = await filterHidden(await listSessions(proj.cwd));
         const active = getActiveSessions(chatId);
+        const bridgeSessionIds = new Set(getBridgeSessionIds(chatId));
         const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
         const historyOnly = history.filter(h => !activeClaudeIds.has(h.id));
         let msg = `🟢 已接入项目：${proj.name}`;
@@ -163,7 +165,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
           msg += '\n\n💻 电脑上的历史会话：';
           display.forEach((s, i) => {
             const rl = (s.summary || s.name || s.date || s.id.slice(0, 8)).slice(0, 25);
-            const label = s.source === 'bridge' ? '[🌉] ' + rl : rl;
+            const label = (s.source === 'bridge' || bridgeSessionIds.has(s.id)) ? '[🌉] ' + rl : rl;
             msg += `\n  ${btnIdx + 1}. ${label}`;
             btns.push({ text: `${btnIdx + 1}`, data: `s:${btnIdx++}` });
           });
@@ -196,6 +198,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     // /list → 返回会话列表（恢复原列表消息的键盘 + 隐藏预览消息键盘）
     if (trimmed === '/list' && group) {
       const active2 = getActiveSessions(chatId);
+      const bridgeSessionIds2 = new Set(getBridgeSessionIds(chatId));
       const history2 = await filterHidden(await listSessions(group.project_path));
       const display2 = history2.slice(0, 8);
       const btnsL = [];
@@ -209,7 +212,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
         msg2 += '\n\n💻 历史会话：';
         display2.forEach((s, i) => {
           const rl = s.summary || s.name || s.date || s.id.slice(0, 8);
-          const lb = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rl)) : rl;
+          const lb = bridgeSessionIds2.has(s.id) ? '[🌉] ' + rl : rl;
           msg2 += `\n  ${si + i + 1}. ${lb}`;
           btnsL.push({ text: `${si+i+1}`, data: `s:${si+i}` });
         });
@@ -333,6 +336,9 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       for (const as of activeStop) {
         updateSessionStatus(as.id, 'idle');
         markIdle(as.id, as.claude_session_id);
+        // 中断流式请求（如果正在流式输出）
+        const sreq = streamReqs.get(as.id);
+        if (sreq) { sreq.destroy(); streamReqs.delete(as.id); }
         // 调 Agent 杀掉正在跑的 Claude 进程
         if (as.claude_session_id) {
           agentCall('POST', '/api/stop-claude', { sessionId: as.claude_session_id }, 5000).catch(() => {});
@@ -495,6 +501,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
   // 查看会话列表
   if (trimmed === '列表' || trimmed === '/list') {
     const active = getActiveSessions(chatId);
+    const bridgeSessionIds = new Set(getBridgeSessionIds(chatId));
     let rawHistory = await listSessions(group.project_path);
     rawHistory = await filterHidden(rawHistory);
     const history = active.filter(s => s.claude_session_id)
@@ -517,7 +524,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       msg += '\n\n💻 历史会话：';
       history.slice(0, 10).forEach((s, i) => {
         const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
-	        const label = s.source === 'bridge' ? '[Bridge] ' + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
+	        const label = (s.source === 'bridge' || bridgeSessionIds.has(s.id)) ? '[🌉] ' + rawLabel : rawLabel;
         msg += `\n  ${startIdx + i + 1}. ${label}`;
       });
     }
@@ -631,13 +638,14 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       if (idx >= 0 && idx < projList.length) {
         const [name, cwd] = projList[idx];
         addGroup(chatId, name, cwd);
+        const bridgeSessionIds = new Set(getBridgeSessionIds(chatId));
         const history = await filterHidden(await listSessions(cwd));
         let msg = `🟢 已接入项目：${name}`;
         if (history.length > 0) {
           msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
           history.slice(0, 8).forEach((s, i) => {
             const rawLabel = s.summary ? s.summary.slice(0, 30) : s.date || '';
-            const label = s.source === 'bridge' ? '[Bridge] ' + rawLabel : rawLabel;
+            const label = (s.source === 'bridge' || bridgeSessionIds.has(s.id)) ? '[🌉] ' + rawLabel : rawLabel;
             msg += `\n  ${i + 1}. ${label}`;
           });
           msg += '\n\n或 @会话名 <消息> 新建会话';
@@ -653,13 +661,14 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     );
     if (match) {
       addGroup(chatId, match[0], match[1], platform);
+      const bridgeSessionIds = new Set(getBridgeSessionIds(chatId));
       const history = await filterHidden(await listSessions(match[1]));
       let msg = `🟢 已接入项目：${match[0]}`;
       if (history.length > 0) {
         msg += `\n\n💻 电脑上的历史会话（回复序号续接）：`;
         history.slice(0, 8).forEach((s, i) => {
           const rawLabel = s.summary ? s.summary.slice(0, 30) : s.date || '';
-          const label = s.source === 'bridge' ? '[Bridge] ' + rawLabel : rawLabel;
+          const label = (s.source === 'bridge' || bridgeSessionIds.has(s.id)) ? '[🌉] ' + rawLabel : rawLabel;
           msg += `\n  ${i + 1}. ${label}`;
         });
         msg += '\n\n或 @会话名 <消息> 新建会话';
@@ -723,6 +732,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     }
 
     const active = getActiveSessions(chatId);
+    const bridgeSessionIds = new Set(getBridgeSessionIds(chatId));
     // 只有唯一活跃会话 → 直接路由
     if (active.length === 1) {
       await handleSessionMessage(chatId, userId, active[0], trimmed, group);
@@ -748,7 +758,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
 💻 电脑历史会话：`;
       displayHistory2.forEach((s, i) => {
         const rawLabel = s.summary || s.name || s.date || s.id.slice(0, 8);
-        const label = s.source === `bridge` ? `[Bridge] ` + (s.summary || (s.name ? s.name.slice(7) : rawLabel)) : rawLabel;
+        const label = (s.source === 'bridge' || bridgeSessionIds.has(s.id)) ? `[🌉] ` + rawLabel : rawLabel;
         const busy = isBusyUuid(s.id) ? ` 🔄` : ``;
         msg += `
   ${startIdx + i + 1}. ${label}${busy}`;
@@ -991,7 +1001,8 @@ async function renderPreviewPage(chatId, userId, num, page, detail, platform, ms
   if (msgId) {
     await telegram.editMessageText(chatId, msgId, msg.slice(0, 4000), kb);
   } else {
-    await telegram.sendMessage(chatId, msg.slice(0, 4000), { replyMarkup: kb });
+    const sent = await telegram.sendMessage(chatId, msg.slice(0, 4000), { replyMarkup: kb });
+    if (sent?.message_id) trackKeyboardMsg(sent.message_id);
   }
 }
 
@@ -1062,45 +1073,124 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const stopKb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
     const sent = await telegram.sendMessage(chatId, `Claude·${name}:\n⏳ 处理中...`, { replyMarkup: stopKb });
     tgPendingMsgId = sent?.message_id;
-    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); }
+    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); trackKeyboardMsg(tgPendingMsgId); }
   } else {
     await reply(chatId, userId, `Claude·${name}:\n⏳ 处理中...`, pf);
   }
 
   try {
-    const result = await execClaude(claudeSid, message, { cwd: group.project_path, platform: pf });
+    let result;
+    // ── TG 流式：NDJSON 逐行驱动 TG 消息原地刷新 ──
+    if (pf === 'telegram') {
+      let accumulated = '';
+      let lastEditTime = 0;
+      let streamReq = null;
+      const EDIT_DEBOUNCE = 500; // ms，节流 TG 编辑
 
-    // ── TG 权限交互：检测到 Claude 需要批准 ──
-    if (result.status === 'permission_needed' && pf === 'telegram') {
-      tgPermissionState.set(chatId, {
-        pendingSessionId: result.pendingSessionId,
-        sessionName: name,
-        tgPendingMsgId,
-        group,
-        s,
-        existingSession,
-        isNew,
-        accumulatedOutput: result.stdout,
-        claudeSid,
-        permissionCount: 1,
+      const editLive = async (text, markup) => {
+        if (!tgPendingMsgId) return;
+        const now = Date.now();
+        if (markup) { lastEditTime = 0; } // 权限键盘立即刷
+        if (now - lastEditTime < EDIT_DEBOUNCE) return;
+        lastEditTime = now;
+        await telegram.editMessageText(chatId, tgPendingMsgId, text, markup || null, true).catch(() => {});
+      };
+
+      result = await new Promise((resolve) => {
+        streamReq = execClaudeStream(claudeSid, message, { cwd: group.project_path, platform: 'telegram' }, {
+          onChunk(text) {
+            accumulated += text;
+            // 只显示末尾 ~3500 字符（TG 上限 4096）
+            const display = accumulated.length > 3500
+              ? `...${accumulated.slice(-3500)}`
+              : accumulated;
+            editLive(`Claude·${name}:\n${display}\n\n⏳ 生成中...`);
+          },
+          onPermission(evt) {
+            resolve({ status: 'permission_needed', pendingSessionId: evt.pendingSessionId, stdout: evt.stdout, stderr: evt.stderr || '' });
+          },
+          onDone(evt) {
+            resolve({
+              status: evt.status || 'completed',
+              stdout: evt.stdout || accumulated || '',
+              stderr: evt.stderr || '',
+              code: evt.code || 0,
+              newSessionId: evt.newSessionId || null,
+            });
+          },
+        });
+        if (s) streamReqs.set(s.id, streamReq);
       });
-      const permKb = telegram.buildInlineKeyboard([
-        [{ text: '✅ 批准', data: 'y:ok' }, { text: '❌ 拒绝', data: 'n:no' }],
-        [{ text: '⏹ 停止', data: 'x:stop' }],
-      ], 2);
-      const tail = (result.stdout || '').slice(-1500);
-      if (tgPendingMsgId) {
-        await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${tail}\n\n_需要你的批准_`, permKb, false);
+      if (s) streamReqs.delete(s.id);
+
+      // ── TG 权限交互 ──
+      if (result.status === 'permission_needed') {
+        tgPermissionState.set(chatId, {
+          pendingSessionId: result.pendingSessionId,
+          sessionName: name,
+          tgPendingMsgId,
+          group,
+          s,
+          existingSession,
+          isNew,
+          accumulatedOutput: result.stdout,
+          claudeSid,
+          permissionCount: 1,
+        });
+        const permKb = telegram.buildInlineKeyboard([
+          [{ text: '✅ 批准', data: 'y:ok' }, { text: '❌ 拒绝', data: 'n:no' }],
+          [{ text: '⏹ 停止', data: 'x:stop' }],
+        ], 2);
+        const tail = (result.stdout || '').slice(-1500);
+        if (tgPendingMsgId) {
+          await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${tail}\n\n_需要你的批准_`, permKb, false);
+        }
+        return; // 不释放锁 —— 等待用户按钮响应
       }
-      // 不释放锁 —— 等待用户按钮响应
+
+      const fullOutput = result.stdout || result.stderr || '(无输出)';
+      const output = fullOutput.slice(0, 3800);
+      auditLog(chatId, existingSession?.id || null, 'out', output);
+
+      recordChronicle(group.project_path, name, 'in', message, 'user');
+      recordChronicle(group.project_path, name, 'out', fullOutput, 'user');
+
+      const _s = existingSession || getSessionByName(chatId, name);
+      if (_s) {
+        touchSession(_s.id);
+        if (isNew && result.newSessionId) {
+          updateClaudeSessionId(_s.id, result.newSessionId);
+        } else if (!claudeSid && !isNew) {
+          const newSid = await findLatestSession(group.project_path);
+          if (newSid) updateClaudeSessionId(_s.id, newSid);
+        }
+      }
+
+      const bridgeResult = await bridgeRoute(chatId, userId, fullOutput, group, name);
+      if (bridgeResult?.handled) { if (s) { markIdle(s.id, s.claude_session_id); drainSessionQueue(chatId, s.id, group).catch(e => console.error('Session drain error:', e)); } return; }
+
+      // 最终编辑：去掉"生成中"后缀
+      if (tgPendingMsgId && s && !isBusy(s.id)) {
+        await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${output}\n\n⏹ 已中断`, null, true);
+      } else if (tgPendingMsgId) {
+        await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${output}`, null, true);
+      } else {
+        await reply(chatId, userId, `Claude·${name}:\n${output}`, pf);
+      }
+      // 释放锁 + 排空队列
+      if (s) {
+        markIdle(s.id, s.claude_session_id);
+        drainSessionQueue(chatId, s.id, group).catch(e => console.error('Session drain error:', e));
+      }
       return;
     }
 
+    // ── 非 TG（企微）：一次性全部输出 ──
+    result = await execClaude(claudeSid, message, { cwd: group.project_path, platform: pf });
     const fullOutput = result.stdout || result.stderr || '(无输出)';
     const output = fullOutput.slice(0, 3800);
     auditLog(chatId, existingSession?.id || null, 'out', output);
 
-    // 公开记录：写入项目 .bridge/sessions/@name.md
     recordChronicle(group.project_path, name, 'in', message, 'user');
     recordChronicle(group.project_path, name, 'out', fullOutput, 'user');
 
@@ -1115,19 +1205,10 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
       }
     }
 
-    // Bridge 路由：检测 @bridge:notify，拦截并转发到目标会话
     const bridgeResult = await bridgeRoute(chatId, userId, fullOutput, group, name);
-    if (bridgeResult?.handled) return; // Bridge 已处理，不发原始输出
+    if (bridgeResult?.handled) return;
 
-    if (pf === 'telegram' && tgPendingMsgId && s && !isBusy(s.id)) {
-      // 已被停止 → 显示部分输出 + "已中断"标记
-      const partial = output || '(无输出)';
-      await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${partial}\n\n⏹ 已中断`, null, true);
-    } else if (pf === 'telegram' && tgPendingMsgId) {
-      await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${output}`, null, true);
-    } else {
-      await reply(chatId, userId, `Claude·${name}:\n${output}`, pf);
-    }
+    await reply(chatId, userId, `Claude·${name}:\n${output}`, pf);
   } catch (err) {
     if (pf === 'telegram' && tgPendingMsgId) {
       await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n❌ ${err.message.slice(0, 500)}`, null, true);
@@ -1135,8 +1216,8 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
       await reply(chatId, userId, `Claude·${name}:\n❌ ${err.message.slice(0, 500)}`, pf);
     }
   } finally {
-    // 🔓 释放锁 + 排空队列
-    if (s) {
+    // 🔓 释放锁 + 排空队列（TG 在内部 return 前已手动释放）
+    if (pf !== 'telegram' && s) {
       markIdle(s.id, s.claude_session_id);
       drainSessionQueue(chatId, s.id, group).catch(e => console.error('Session drain error:', e));
     }
@@ -1185,6 +1266,7 @@ app.post(config.telegram.webhookPath, express.json(), async (req, res) => {
     // 处理 inline keyboard callback
     if (update.callback_query) {
       const cq = update.callback_query;
+      if (!cq.message || !cq.from) return; // 消息已被删除或非聊天回调
       const chatId = String(cq.message.chat.id);
       const userId = String(cq.from.id);
       const data = cq.data;
@@ -1204,7 +1286,7 @@ app.post(config.telegram.webhookPath, express.json(), async (req, res) => {
     }
     // 普通文本消息
     const msg = update.message || update.edited_message;
-    if (!msg || !msg.text) return;
+    if (!msg || !msg.text || !msg.chat || !msg.from) return;
     const chatId = String(msg.chat.id);
     const userId = String(msg.from.id);
     // 群聊中 @bot 或 /command@bot 前缀剥离

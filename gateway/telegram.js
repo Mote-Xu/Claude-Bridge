@@ -97,7 +97,8 @@ async function editMessageText(chatId, messageId, text, replyMarkup, plainText) 
     text: formatted.slice(0, 4000),
     parse_mode: plainText ? '' : 'HTML',
   };
-  if (replyMarkup) body.reply_markup = replyMarkup;
+  // null/undefined → 移除键盘；对象 → 设置键盘
+  body.reply_markup = replyMarkup || { inline_keyboard: [] };
   return apiCall('editMessageText', body);
 }
 
