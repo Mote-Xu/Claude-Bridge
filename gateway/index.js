@@ -145,24 +145,34 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       if (proj) {
         addGroup(chatId, proj.name, proj.cwd, 'telegram');
         const history = await filterHidden(await listSessions(proj.cwd));
+        const active = getActiveSessions(chatId);
+        const activeClaudeIds = new Set(active.map(s => s.claude_session_id).filter(Boolean));
+        const historyOnly = history.filter(h => !activeClaudeIds.has(h.id));
         let msg = `🟢 已接入项目：${proj.name}`;
-        if (history.length > 0) {
-          msg += '\n\n💻 电脑上的历史会话：';
-          const btns = [];
-          const display = history.slice(0, 12);
-          cacheSet(chatId, { projects: cached.projects, sessions: display, activeCount: 0, projectName: proj.name });
-          display.forEach((s, i) => {
-            const label = (s.summary || s.name || s.date || s.id.slice(0, 8)).slice(0, 25);
-            msg += `\n  ${i + 1}. ${label}`;
-            btns.push({ text: `${i + 1}`, data: `s:${i}` });
+        const btns = [];
+        let btnIdx = 0;
+        if (active.length > 0) {
+          msg += '\n\n🟢 活跃中：';
+          active.forEach((s, i) => {
+            msg += `\n  ${i + 1}. @${s.session_name} (${s.message_count}轮)`;
+            btns.push({ text: `${i + 1}`, data: `s:${btnIdx++}` });
           });
-          msg += '\n\n或 @会话名 <消息> 新建会话';
-          const kb = telegram.buildInlineKeyboard(btns, 4);
-          const res = await rp(msg, kb);
-        } else {
-          msg += '\n用 @会话名 <消息> 开始对话';
-          await rp(msg);
         }
+        const display = historyOnly.slice(0, 12);
+        if (display.length > 0) {
+          msg += '\n\n💻 电脑上的历史会话：';
+          display.forEach((s, i) => {
+            const rl = (s.summary || s.name || s.date || s.id.slice(0, 8)).slice(0, 25);
+            const label = s.source === 'bridge' ? '[🌉] ' + rl : rl;
+            msg += `\n  ${btnIdx + 1}. ${label}`;
+            btns.push({ text: `${btnIdx + 1}`, data: `s:${btnIdx++}` });
+          });
+        }
+        msg += '\n\n或 @会话名 <消息> 新建会话';
+        cacheSet(chatId, { projects: cached.projects, sessions: display, activeCount: active.length, projectName: proj.name });
+        clearAllKeyboards(chatId);
+        const kb = telegram.buildInlineKeyboard(btns, 4);
+        await rp(msg, kb);
       } else {
         await rp('❌ 项目序号已过期，请重新发送「项目列表」');
       }
@@ -228,14 +238,21 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
 
       try {
         const result = await writeStdin(pendingSessionId, input, permGroup.project_path);
+        const permRound = (permState.permissionCount || 0) + 1;
 
         if (result.status === 'permission_needed') {
+          // 权限循环上限：最多 5 轮，超过自动拒绝
+          if (permRound > 5) {
+            await rp(`Claude·${sessionName}:\n⚠️ 权限请求超过上限（5次），已自动拒绝`);
+            if (permS) { markIdle(permS.id, permS.claude_session_id); drainSessionQueue(chatId, permS.id, permGroup).catch(() => {}); }
+            return;
+          }
           // 又一次权限提示 —— 重新显示按钮
           tgPermissionState.set(chatId, {
             ...permState,
             pendingSessionId: result.pendingSessionId || pendingSessionId,
             accumulatedOutput: result.stdout,
-            permissionCount: (permState.permissionCount || 0) + 1,
+            permissionCount: permRound,
           });
           const permKb = telegram.buildInlineKeyboard([
             [{ text: '✅ 批准', data: 'y:ok' }, { text: '❌ 拒绝', data: 'n:no' }],
@@ -399,11 +416,11 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       // TG: 缓存全部轮次，分页展示
       if (platform === 'telegram' && detail.allRounds && detail.allRounds.length > 0) {
         const pages = Math.ceil(detail.allRounds.length / 2);
+        clearAllKeyboards(chatId);
         cacheSet(chatId, {
           preview: { num, detail, targetId, allRounds: detail.allRounds },
           ttl: Date.now() + 600000,
         });
-        clearAllKeyboards(chatId);
         await renderPreviewPage(chatId, userId, num, 0, detail, platform);
       } else {
         let msg = `📋 会话预览 #${num}`;

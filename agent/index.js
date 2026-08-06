@@ -137,12 +137,14 @@ app.post('/api/discover', (req, res) => {
 
 // ── 权限检测 ──────────────────────────────────────────────
 // Claude Code 权限提示特征：⏺ Do you want to proceed? (y/n)
-// 精确匹配：末尾出现 ? (y/n) 或 proceed? —— 避免 Claude 对话中提及 (y/n) 误触发
+// 检测末尾出现的权限提示（先剥离 ANSI 序列再匹配）
 function detectPermissionPrompt(text) {
   if (!text) return false;
-  // 只检查末尾 300 字符 —— 权限提示总是在最末尾，Claude 等待输入
-  const tail = text.slice(-300);
-  return /\?\s*\(y\/n\)\s*$/i.test(tail) || /\bproceed\?/i.test(tail);
+  // 剥离 ANSI 转义序列（Claude Code 用它们做粗体/颜色）
+  const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
+  // 只检查末尾 500 字符
+  const tail = clean.slice(-500);
+  return /\?\s*\(y\/n\)\s*$/im.test(tail) || /\bproceed\?\s*$/im.test(tail);
 }
 
 // 构建完成响应
@@ -327,7 +329,7 @@ app.post('/api/run-claude', async (req, res) => {
       }
     });
     child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } });
+    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000); });
     child.on('exit', code => {
       procState.state = 'exited'; procState.exitCode = code;
       if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); }
