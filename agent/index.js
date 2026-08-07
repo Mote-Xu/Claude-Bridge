@@ -309,7 +309,7 @@ app.post('/api/run-claude', async (req, res) => {
     execEnv.PATH = sys32 + ';' + (process.env.PATH || '');
     const cmdLine = sessionId
       ? `${CLAUDE_BIN} --resume ${sessionId}`
-      : CLAUDE_BIN;
+      : `${CLAUDE_BIN} -p`;
 
     const prevCwd = process.cwd();
     if (cwd) { try { process.chdir(cwd); } catch {} }
@@ -326,6 +326,73 @@ app.post('/api/run-claude', async (req, res) => {
     runningProcs.set(trackId, procState);
     if (sessionId) sessionBusy.add(sessionId);
 
+    // 清理 tracking 映射
+    const cleanupTracking = () => {
+      runningProcs.delete(trackId);
+      if (sessionId) sessionBusy.delete(sessionId);
+      if (dbSessionId) dbToTrack.delete(dbSessionId);
+      for (const [dbId, tid] of dbToTrack) { if (tid === trackId) { dbToTrack.delete(dbId); break; } }
+    };
+
+    // ── 流式模式：NDJSON 逐行写 HTTP 响应 ──
+    const useStream = req.body.stream === true;
+    if (useStream) {
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      let streamEnded = false;
+      function writeLine(obj) { if (!streamEnded) { try { res.write(JSON.stringify(obj) + '\n'); } catch {} } }
+      function endStream(obj) { if (!streamEnded) { streamEnded = true; try { res.end(JSON.stringify(obj || {}) + '\n'); } catch {} } }
+
+      child.stdout.on('data', d => {
+        const text = d.toString('utf-8');
+        procState.stdoutBuf += text;
+        if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
+          procState.state = 'waiting_permission';
+          endStream({ type: 'permission_needed', pendingSessionId: trackId, stdout: procState.stdoutBuf, stderr: procState.stderrBuf });
+          return;
+        }
+        writeLine({ type: 'chunk', text });
+      });
+      child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
+      child.on('error', err => {
+        procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message;
+        endStream({ type: 'error', message: err.message });
+        cleanupTracking();
+      });
+      child.on('exit', code => {
+        procState.state = 'exited'; procState.exitCode = code;
+        const completed = buildCompletedResponse(procState, cwd, sessionId);
+        endStream({ type: 'done', ...completed });
+        cleanupTracking();
+      });
+
+      // Gateway 断开 → 杀 Claude 进程
+      res.on('close', () => {
+        if (procState.state !== 'exited') {
+          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+          procState.state = 'exited'; procState.exitCode = 1;
+        }
+      });
+
+      // 180s 超时
+      const streamTimeout = setTimeout(() => {
+        if (procState.state !== 'exited') {
+          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+          procState.state = 'exited'; procState.exitCode = 1;
+          endStream({ type: 'done', status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
+        }
+      }, 180000);
+      res.on('close', () => clearTimeout(streamTimeout));
+
+      child.stdin.write(message + '\n');
+      child.stdin.end();
+      return; // 不执行下面的 await Promise 非流式路径
+    }
+
+    // ── 非流式（企微）：积累全部 stdout 后一次返回 ──
     child.stdout.on('data', d => {
       procState.stdoutBuf += d.toString('utf-8');
       if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
@@ -351,14 +418,6 @@ app.post('/api/run-claude', async (req, res) => {
       }
     });
     child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-    // 清理 tracking 映射
-    const cleanupTracking = () => {
-      runningProcs.delete(trackId);
-      if (sessionId) sessionBusy.delete(sessionId);
-      if (dbSessionId) dbToTrack.delete(dbSessionId);
-      // 也清理反向映射
-      for (const [dbId, tid] of dbToTrack) { if (tid === trackId) { dbToTrack.delete(dbId); break; } }
-    };
     child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(cleanupTracking, 30000); });
     child.on('exit', code => {
       procState.state = 'exited'; procState.exitCode = code;
