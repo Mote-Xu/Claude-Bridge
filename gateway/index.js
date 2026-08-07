@@ -1066,7 +1066,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const stopKb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
     const sent = await telegram.sendMessage(chatId, `Claude·${name}:\n⏳ 处理中...`, { replyMarkup: stopKb });
     tgPendingMsgId = sent?.message_id;
-    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); trackKeyboardMsg(tgPendingMsgId); }
+    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); }
   } else {
     await reply(chatId, userId, `Claude·${name}:\n⏳ 处理中...`, pf);
   }
