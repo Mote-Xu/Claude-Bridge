@@ -78,36 +78,36 @@ function cacheGet(chatId) {
   return d;
 }
 
+// ── 键盘追踪（模块级，handleMessage 和 handleSessionMessage 共用）──
+function trackKeyboardMsg(msgId, chatId) {
+  const c = cacheGet(chatId) || {};
+  if (!c._kbdMsgs) c._kbdMsgs = [];
+  c._kbdMsgs.push(msgId);
+  cacheSet(chatId, c);
+  console.log(`[KBD] Tracked msg ${msgId} for chat ${chatId}, total: ${c._kbdMsgs.length}`);
+}
+function clearAllKeyboards(cid) {
+  const c = cacheGet(cid);
+  if (c?._kbdMsgs && c._kbdMsgs.length > 0) {
+    console.log(`[KBD] Clearing ${c._kbdMsgs.length} keyboards for chat ${cid}:`, c._kbdMsgs);
+    for (const id of c._kbdMsgs) {
+      telegram.editMessageReplyMarkup(cid, id, {}).catch(err => console.error(`[KBD] Failed to clear msg ${id}:`, err.message));
+    }
+    c._kbdMsgs = [];
+    cacheSet(cid, c);
+  } else {
+    console.log(`[KBD] No keyboards to clear for chat ${cid}`);
+  }
+}
+
 async function handleMessage(chatId, userId, text, platform = 'wecom') {
   const group = getGroup(chatId);
 
   // 快捷 reply：自动使用当前消息的 platform
-  // 追踪带键盘的消息 ID，预览/退出时全清
-  function trackKeyboardMsg(msgId) {
-    const c = cacheGet(chatId) || {};
-    if (!c._kbdMsgs) c._kbdMsgs = [];
-    c._kbdMsgs.push(msgId);
-    cacheSet(chatId, c);
-    console.log(`[KBD] Tracked msg ${msgId} for chat ${chatId}, total: ${c._kbdMsgs.length}`);
-  }
-  function clearAllKeyboards(cid) {
-    const c = cacheGet(cid);
-    if (c?._kbdMsgs && c._kbdMsgs.length > 0) {
-      console.log(`[KBD] Clearing ${c._kbdMsgs.length} keyboards for chat ${cid}:`, c._kbdMsgs);
-      for (const id of c._kbdMsgs) {
-        telegram.editMessageReplyMarkup(cid, id, {}).catch(err => console.error(`[KBD] Failed to clear msg ${id}:`, err.message));
-      }
-      c._kbdMsgs = [];
-      cacheSet(cid, c);
-    } else {
-      console.log(`[KBD] No keyboards to clear for chat ${cid}`);
-    }
-  }
-
   async function rp(text_, markup) {
     if (platform === 'telegram' && markup) {
       const res = await telegram.sendMessage(chatId, text_.slice(0, 4000), { replyMarkup: markup });
-      if (res?.message_id) trackKeyboardMsg(res.message_id);
+      if (res?.message_id) trackKeyboardMsg(res.message_id, chatId);
       return res;
     } else {
       await reply(chatId, userId, text_, platform);
@@ -1002,7 +1002,7 @@ async function renderPreviewPage(chatId, userId, num, page, detail, platform, ms
     await telegram.editMessageText(chatId, msgId, msg.slice(0, 4000), kb);
   } else {
     const sent = await telegram.sendMessage(chatId, msg.slice(0, 4000), { replyMarkup: kb });
-    if (sent?.message_id) trackKeyboardMsg(sent.message_id);
+    if (sent?.message_id) trackKeyboardMsg(sent.message_id, chatId);
   }
 }
 
@@ -1073,7 +1073,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
     const stopKb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
     const sent = await telegram.sendMessage(chatId, `Claude·${name}:\n⏳ 处理中...`, { replyMarkup: stopKb });
     tgPendingMsgId = sent?.message_id;
-    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); trackKeyboardMsg(tgPendingMsgId); }
+    if (tgPendingMsgId) { const c3 = cacheGet(chatId) || {}; c3._pendingMsgId = tgPendingMsgId; cacheSet(chatId, c3); trackKeyboardMsg(tgPendingMsgId, chatId); }
   } else {
     await reply(chatId, userId, `Claude·${name}:\n⏳ 处理中...`, pf);
   }
