@@ -298,8 +298,9 @@ app.post('/api/run-claude', async (req, res) => {
 
   // ── TG：spawn + stdin 不 end + stdout 实时权限检测 ──
   const dbSessionId = req.body.dbSessionId ? String(req.body.dbSessionId) : null;
-  const trackId = dbSessionId || sessionId || `tg-${Date.now()}`;
-  // 注册 DB ID → trackId 映射（x:stop 可以按 DB ID 查找）
+  // trackId: UUID 优先（兼容 --resume），其次 DB ID（x:stop 用），最后随机
+  const trackId = sessionId || dbSessionId || `tg-${Date.now()}`;
+  // 注册 DB → trackId 映射（x:stop 可以按 DB session ID 查找）
   if (dbSessionId) dbToTrack.set(dbSessionId, trackId);
   try {
     const cmdExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
@@ -329,7 +330,24 @@ app.post('/api/run-claude', async (req, res) => {
       procState.stdoutBuf += d.toString('utf-8');
       if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
         procState.state = 'waiting_permission';
-        if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: trackId }); }
+        // pendingSessionId 必须能用 --resume（=UUID），新建会话需扫描 JSONL
+        let permId = sessionId;
+        if (!permId && cwd) {
+          try {
+            const encoded = encodeProject(cwd);
+            const projDir = path.join(PROJECTS_DIR, encoded);
+            if (fs.existsSync(projDir)) {
+              let latest = null, latestTime = 0;
+              for (const f of fs.readdirSync(projDir).filter(x => x.endsWith('.jsonl'))) {
+                const st = fs.statSync(path.join(projDir, f));
+                if (st.mtimeMs > latestTime) { latestTime = st.mtimeMs; latest = f; }
+              }
+              permId = latest ? latest.replace('.jsonl', '') : null;
+            }
+          } catch {}
+        }
+        if (!permId) permId = trackId;
+        if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: permId }); }
       }
     });
     child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });

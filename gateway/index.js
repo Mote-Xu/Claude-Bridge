@@ -333,9 +333,9 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       for (const as of activeStop) {
         updateSessionStatus(as.id, 'idle');
         markIdle(as.id, as.claude_session_id);
-        // 调 Agent 杀掉正在跑的 Claude 进程（UUID 或 DB session ID）
-        const stopId = as.claude_session_id || String(as.id);
-        console.log(`[STOP] x:stop → killing sessionId=${stopId} (uuid=${as.claude_session_id || 'null'} db=${as.id})`);
+        // 调 Agent 杀掉正在跑的 Claude 进程（始终用 DB session ID，Agent 以它为主 key）
+        const stopId = String(as.id);
+        console.log(`[STOP] x:stop → killing db=${stopId} name=${as.session_name} uuid=${as.claude_session_id || 'null'}`);
         agentCall('POST', '/api/stop-claude', { sessionId: stopId }, 5000).catch(err => console.error(`[STOP] stop-claude failed:`, err.message));
       }
       // 编辑"处理中"消息 → 等待 execClaude 返回部分输出后自动覆盖
