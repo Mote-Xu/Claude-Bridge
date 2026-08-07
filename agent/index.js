@@ -307,9 +307,12 @@ app.post('/api/run-claude', async (req, res) => {
     const sys32 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
     const execEnv = { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' };
     execEnv.PATH = sys32 + ';' + (process.env.PATH || '');
+    // stream-json 模式：-p + --output-format stream-json --include-partial-messages --verbose
+    // 消息通过 stdin 传入，输出为逐行 JSON（token 级别流式，解决 pipe 全缓冲问题）
+    const streamFlags = '-p --output-format stream-json --include-partial-messages --verbose';
     const cmdLine = sessionId
-      ? `${CLAUDE_BIN} --resume ${sessionId}`
-      : `${CLAUDE_BIN} -p`;
+      ? `${CLAUDE_BIN} ${streamFlags} --resume ${sessionId}`
+      : `${CLAUDE_BIN} ${streamFlags}`;
 
     const prevCwd = process.cwd();
     if (cwd) { try { process.chdir(cwd); } catch {} }
@@ -346,16 +349,57 @@ app.post('/api/run-claude', async (req, res) => {
       function writeLine(obj) { if (!streamEnded) { try { res.write(JSON.stringify(obj) + '\n'); } catch {} } }
       function endStream(obj) { if (!streamEnded) { streamEnded = true; try { res.end(JSON.stringify(obj || {}) + '\n'); } catch {} } }
 
+      // ── 流式模式：解析 stream-json 输出，提取 text_delta 作为 NDJSON chunk ──
+      // Claude CLI 的 --output-format=stream-json + --include-partial-messages
+      // 产生 token 级别的 text_delta 事件，解决 pipe 全缓冲问题
+      // 事件类型：system:{subtype:init} → stream_event:{content_block_start:thinking} →
+      //   stream_event:{content_block_delta:thinking_delta} → ... →
+      //   stream_event:{content_block_start:text} →
+      //   stream_event:{content_block_delta:text_delta} → ... →
+      //   stream_event:{message_delta,message_stop} → result
+
+      let streamSessionId = sessionId;       // 从 stream-json 事件中提取，新建会话用
+      let streamAccumulated = '';            // 累积的纯文本输出
+      let streamJsonlBuf = '';               // 行缓冲（JSON 按行拆分）
+
       child.stdout.on('data', d => {
-        const text = d.toString('utf-8');
-        procState.stdoutBuf += text;
-        if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
-          procState.state = 'waiting_permission';
-          endStream({ type: 'permission_needed', pendingSessionId: trackId, stdout: procState.stdoutBuf, stderr: procState.stderrBuf });
-          return;
+        const chunk = d.toString('utf-8');
+        procState.stdoutBuf += chunk;        // 原始 JSONL 存 procState 用于调试
+
+        streamJsonlBuf += chunk;
+        const lines = streamJsonlBuf.split('\n');
+        streamJsonlBuf = lines.pop();        // 保留不完整行
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+
+            // system:init → 提取 session_id
+            if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
+              if (!streamSessionId) streamSessionId = evt.session_id;
+            }
+
+            // stream_event: content_block_delta → 提取文本
+            if (evt.type === 'stream_event' && evt.event?.type === 'content_block_delta') {
+              const delta = evt.event.delta;
+              // 只转发 text_delta（跳过 thinking_delta）
+              if (delta?.type === 'text_delta' && delta.text) {
+                if (evt.session_id && !streamSessionId) streamSessionId = evt.session_id;
+                streamAccumulated += delta.text;
+                writeLine({ type: 'chunk', text: delta.text });
+              }
+            }
+
+            // result → 最终结果（session_id、usage 等）
+            if (evt.type === 'result') {
+              if (evt.session_id) streamSessionId = evt.session_id;
+              procState._resultEvent = evt;
+            }
+          } catch {} // 非 JSON 行（如 stderr 混入）静默跳过
         }
-        writeLine({ type: 'chunk', text });
       });
+
       child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
       child.on('error', err => {
         procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message;
@@ -364,8 +408,31 @@ app.post('/api/run-claude', async (req, res) => {
       });
       child.on('exit', code => {
         procState.state = 'exited'; procState.exitCode = code;
-        const completed = buildCompletedResponse(procState, cwd, sessionId);
-        endStream({ type: 'done', ...completed });
+        // 处理缓冲中残留的最后一行 JSON
+        if (streamJsonlBuf.trim()) {
+          try {
+            const evt = JSON.parse(streamJsonlBuf.trim());
+            if (evt.type === 'stream_event' && evt.event?.type === 'content_block_delta') {
+              const delta = evt.event.delta;
+              if (delta?.type === 'text_delta' && delta.text) {
+                streamAccumulated += delta.text;
+              }
+            }
+            if (evt.type === 'result') {
+              if (evt.session_id) streamSessionId = evt.session_id;
+              procState._resultEvent = evt;
+            }
+          } catch {}
+        }
+        try { upsertCastBridge(cwd, streamSessionId); } catch {}
+        endStream({
+          type: 'done',
+          status: 'completed',
+          stdout: streamAccumulated || '',
+          stderr: procState.stderrBuf,
+          code: code || 0,
+          newSessionId: (!sessionId && streamSessionId) ? streamSessionId : null,
+        });
         cleanupTracking();
       });
 
@@ -382,7 +449,7 @@ app.post('/api/run-claude', async (req, res) => {
         if (procState.state !== 'exited') {
           try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
           procState.state = 'exited'; procState.exitCode = 1;
-          endStream({ type: 'done', status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
+          endStream({ type: 'done', status: 'completed', stdout: streamAccumulated || procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
         }
       }, 180000);
       res.on('close', () => clearTimeout(streamTimeout));
