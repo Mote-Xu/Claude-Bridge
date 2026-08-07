@@ -148,27 +148,26 @@ function detectPermissionPrompt(text) {
 }
 
 // 构建完成响应
-function buildCompletedResponse(procState, cwd, originalSessionId, preFiles) {
+function buildCompletedResponse(procState, cwd, originalSessionId) {
   let newSessionId = null;
-  // 新会话：用差集找新创建的 JSONL
-  if (!originalSessionId && cwd && preFiles && preFiles.size > 0) {
+  if (!originalSessionId && cwd) {
     try {
-      for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
-        if (!d.isDirectory()) continue;
-        for (const f of fs.readdirSync(path.join(PROJECTS_DIR, d.name))) {
-          if (!f.endsWith('.jsonl')) continue;
-          const key = `${d.name}/${f}`;
-          if (!preFiles.has(key)) {
-            newSessionId = f.replace('.jsonl', '');
-            upsertCastBridge(cwd, newSessionId);
-            break; // 只注册第一个新文件（新会话只有一个）
+      const encoded = encodeProject(cwd);
+      const projDir = path.join(PROJECTS_DIR, encoded);
+      if (fs.existsSync(projDir)) {
+        const files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
+        if (files.length > 0) {
+          let latest = null, latestTime = 0;
+          for (const f of files) {
+            const stat = fs.statSync(path.join(projDir, f));
+            if (stat.mtimeMs > latestTime) { latestTime = stat.mtimeMs; latest = f; }
           }
+          newSessionId = latest ? latest.replace('.jsonl', '') : null;
         }
       }
     } catch {}
-  } else if (originalSessionId) {
-    try { upsertCastBridge(cwd, originalSessionId); } catch {}
   }
+  try { upsertCastBridge(cwd, originalSessionId || newSessionId); } catch {}
   return {
     status: 'completed',
     stdout: procState.stdoutBuf || '',
@@ -181,11 +180,8 @@ function buildCompletedResponse(procState, cwd, originalSessionId, preFiles) {
 // POST /api/run-claude — 执行 Claude Code（stdin 直连，不经过 bat 文件）
 // platform=telegram 时使用 spawn + 权限检测；否则使用 exec（向后兼容）
 app.post('/api/run-claude', async (req, res) => {
-  let { sessionId, message, cwd, projectPath, platform } = req.body;
+  const { sessionId, message, cwd, platform } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
-  // 兼容：支持 cwd 和 projectPath 两种字段名
-  if (!cwd && projectPath) cwd = projectPath;
-  if (cwd) cwd = cwd.replace(/\//g, '\\').replace(/\\\\/g, '\\'); // 标准化路径分隔符
 
   // ── 会话索引注册（TG 和非 TG 共用） ──
   if (sessionId && cwd) {
@@ -299,20 +295,8 @@ app.post('/api/run-claude', async (req, res) => {
     return;
   }
 
-  // ── TG：spawn + stdout 实时权限检测 + 流式输出 ──
+  // ── TG：spawn + stdin 不 end + stdout 实时权限检测 ──
   const trackId = sessionId || `tg-${Date.now()}`;
-  // 新会话：spawn 前记录所有项目所有 JSONL，exit 后用差集找新建的会话文件
-  const preFiles = new Set();
-  if (!sessionId) {
-    try {
-      for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
-        if (!d.isDirectory()) continue;
-        for (const f of fs.readdirSync(path.join(PROJECTS_DIR, d.name))) {
-          if (f.endsWith('.jsonl')) preFiles.add(`${d.name}/${f}`);
-        }
-      }
-    } catch {}
-  }
   try {
     const cmdExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
     const sys32 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
@@ -320,7 +304,7 @@ app.post('/api/run-claude', async (req, res) => {
     execEnv.PATH = sys32 + ';' + (process.env.PATH || '');
     const cmdLine = sessionId
       ? `${CLAUDE_BIN} --resume ${sessionId}`
-      : `${CLAUDE_BIN} -p`;
+      : CLAUDE_BIN;
 
     const prevCwd = process.cwd();
     if (cwd) { try { process.chdir(cwd); } catch {} }
@@ -337,66 +321,6 @@ app.post('/api/run-claude', async (req, res) => {
     runningProcs.set(trackId, procState);
     if (sessionId) sessionBusy.add(sessionId);
 
-    // ── 流式模式：NDJSON 逐行写 HTTP 响应 ──
-    const useStream = req.body.stream === true;
-    if (useStream) {
-      res.setHeader('Content-Type', 'application/x-ndjson');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
-
-      let streamEnded = false;
-      function writeLine(obj) { if (!streamEnded) { try { res.write(JSON.stringify(obj) + '\n'); } catch {} } }
-      function endStream(obj) { if (!streamEnded) { streamEnded = true; try { res.end(JSON.stringify(obj || {}) + '\n'); } catch {} } }
-      const cleanup = () => { setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000); };
-
-      child.stdout.on('data', d => {
-        const text = d.toString('utf-8');
-        procState.stdoutBuf += text;
-        if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
-          procState.state = 'waiting_permission';
-          endStream({ type: 'permission_needed', pendingSessionId: trackId, stdout: procState.stdoutBuf, stderr: procState.stderrBuf });
-          return;
-        }
-        writeLine({ type: 'chunk', text });
-      });
-      child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-      child.on('error', err => {
-        procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message;
-        endStream({ type: 'error', message: err.message });
-        cleanup();
-      });
-      child.on('exit', code => {
-        procState.state = 'exited'; procState.exitCode = code;
-        const completed = buildCompletedResponse(procState, cwd, sessionId, preFiles);
-        endStream({ type: 'done', ...completed });
-        cleanup();
-      });
-
-      // Gateway 断开 → 杀 Claude 进程
-      res.on('close', () => {
-        if (procState.state !== 'exited') {
-          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
-          procState.state = 'exited'; procState.exitCode = 1;
-        }
-      });
-
-      // 180s 超时
-      const streamTimeout = setTimeout(() => {
-        if (procState.state !== 'exited') {
-          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
-          procState.state = 'exited'; procState.exitCode = 1;
-          endStream({ type: 'done', status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
-        }
-      }, 180000);
-      res.on('close', () => clearTimeout(streamTimeout));
-
-      child.stdin.write(message + '\n');
-      child.stdin.end();
-      return; // 不执行下面的 await Promise 路径
-    }
-
-    // ── 非流式（企微）：积累全部 stdout 后一次返回 ──
     child.stdout.on('data', d => {
       procState.stdoutBuf += d.toString('utf-8');
       if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
@@ -405,10 +329,10 @@ app.post('/api/run-claude', async (req, res) => {
       }
     });
     child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId, preFiles)); } setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000); });
+    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000); });
     child.on('exit', code => {
       procState.state = 'exited'; procState.exitCode = code;
-      if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId, preFiles)); }
+      if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); }
       setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000);
     });
 
@@ -419,9 +343,11 @@ app.post('/api/run-claude', async (req, res) => {
 
     child.stdin.write(message + '\n');
     child.stdin.end();
+    // TODO: 权限交互 — stdin 需保持开才能写 yes/no。
+    // 临时方案：stdin.end() 让消息先通。后续可用 --print 或双进程模式
 
     const result = await new Promise(resolve => {
-      if (procState.state === 'exited') resolve(buildCompletedResponse(procState, cwd, sessionId, preFiles));
+      if (procState.state === 'exited') resolve(buildCompletedResponse(procState, cwd, sessionId));
       else if (procState.state === 'waiting_permission') resolve({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: trackId });
       else procState.waitResolve = resolve;
     });
@@ -436,9 +362,8 @@ app.post('/api/run-claude', async (req, res) => {
 
 // POST /api/list-sessions — 列出项目会话
 app.post('/api/list-sessions', (req, res) => {
-  let { projectPath } = req.body;
+  const { projectPath } = req.body;
   if (!projectPath) return res.status(400).json({ error: 'projectPath required' });
-  if (projectPath) projectPath = projectPath.replace(/\\\\/g, '\\');
 
   try {
     const encoded = encodeProject(projectPath);
@@ -487,7 +412,7 @@ app.post('/api/list-sessions', (req, res) => {
       // 跳过空会话或无意义短消息
       if (!hasUserMessage) continue;
       const bestSummary = aiTitle || summary;
-      if (!bestSummary || bestSummary.length < 2) continue; // 空/单字乱码
+      if (!bestSummary || bestSummary.length < 5) continue; // hello / 乱码 等
       const sid = f.replace('.jsonl', '');
       sessions.push({
         id: sid,
@@ -515,21 +440,10 @@ app.post('/api/list-sessions', (req, res) => {
       }
     } catch {}
 
-    // 读 Agent 维护的 Bridge 会话注册表（.bridge/bridge-sessions.json）
-    let bridgeSessions = new Set();
-    try {
-      const regPath = path.join(projectPath, '.bridge', 'bridge-sessions.json');
-      if (fs.existsSync(regPath)) {
-        bridgeSessions = new Set(JSON.parse(fs.readFileSync(regPath, 'utf-8')));
-      }
-    } catch {}
-
     for (const s of sessions) {
       if (sessionNames[s.id]) s.name = sessionNames[s.id];
-      // 优先 Agent 注册表（Bridge 创建的 vscode 会话），其次 entrypoint（旧 sdk-cli 会话）
-      if (bridgeSessions.has(s.id)) s.source = 'bridge';
-      else if (s.entrypoint && s.entrypoint !== 'claude-vscode') s.source = 'bridge';
-      else s.source = 'vscode';
+      // sdk-cli → Bridge pipe 模式创建；claude-vscode → VS Code 原生
+      s.source = (s.entrypoint && s.entrypoint !== 'claude-vscode') ? 'bridge' : 'vscode';
     }
     sessions.sort((a, b) => b.sortTime - a.sortTime); // 降序：新的在前
 
@@ -732,26 +646,9 @@ function upsertRoster(rosterPath, projectName, row) {
 }
 
 // 把一个 Bridge 会话登记进项目根 CAST_OF_SESSIONS.md（标 🌉 Bridge）
-// 同时写 .bridge/bridge-sessions.json，供 list-sessions 判断 source
-function registerBridgeSession(projectPath, sessionId) {
-  if (!projectPath || !sessionId) return;
-  if (!fs.existsSync(projectPath)) return;
-  try {
-    const bridgeDir = path.join(projectPath, '.bridge');
-    if (!fs.existsSync(bridgeDir)) fs.mkdirSync(bridgeDir, { recursive: true });
-    const regPath = path.join(bridgeDir, 'bridge-sessions.json');
-    let ids = [];
-    try { ids = JSON.parse(fs.readFileSync(regPath, 'utf-8')); } catch {}
-    if (!ids.includes(sessionId)) {
-      ids.push(sessionId);
-      fs.writeFileSync(regPath, JSON.stringify(ids), 'utf-8');
-    }
-  } catch {}
-}
 function upsertCastBridge(projectPath, sessionId) {
   if (!projectPath || !sessionId) return;
   if (!fs.existsSync(projectPath)) return; // 🛡️ 项目已被删除就跳过，别复活它
-  registerBridgeSession(projectPath, sessionId);
   try {
     const jsonlPath = path.join(PROJECTS_DIR, encodeProject(projectPath), `${sessionId}.jsonl`);
     const meta = getSessionMeta(jsonlPath, sessionId);
