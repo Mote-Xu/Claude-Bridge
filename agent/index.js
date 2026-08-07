@@ -14,7 +14,8 @@ const CLAUDE_BIN = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.
 
 // 会话执行状态追踪（覆盖所有路径：VS Code、Bridge、API）
 const sessionBusy = new Set(); // claude session UUID → true
-const runningProcs = new Map(); // sessionId → ChildProcess（用于 /api/stop-claude）
+const runningProcs = new Map(); // trackId → procState（用于 /api/stop-claude）
+const dbToTrack = new Map();  // DB session ID (string) → trackId（新建会话没有 UUID 时用）
 
 // ── 崩溃日志 + 保活：记录异常但不退出，VBS 看门狗负责重启 ──
 const CRASH_LOG = path.join(os.tmpdir(), 'claude-bridge-agent-crash.log');
@@ -296,7 +297,10 @@ app.post('/api/run-claude', async (req, res) => {
   }
 
   // ── TG：spawn + stdin 不 end + stdout 实时权限检测 ──
-  const trackId = sessionId || `tg-${Date.now()}`;
+  const dbSessionId = req.body.dbSessionId ? String(req.body.dbSessionId) : null;
+  const trackId = dbSessionId || sessionId || `tg-${Date.now()}`;
+  // 注册 DB ID → trackId 映射（x:stop 可以按 DB ID 查找）
+  if (dbSessionId) dbToTrack.set(dbSessionId, trackId);
   try {
     const cmdExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
     const sys32 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
@@ -329,11 +333,19 @@ app.post('/api/run-claude', async (req, res) => {
       }
     });
     child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000); });
+    // 清理 tracking 映射
+    const cleanupTracking = () => {
+      runningProcs.delete(trackId);
+      if (sessionId) sessionBusy.delete(sessionId);
+      if (dbSessionId) dbToTrack.delete(dbSessionId);
+      // 也清理反向映射
+      for (const [dbId, tid] of dbToTrack) { if (tid === trackId) { dbToTrack.delete(dbId); break; } }
+    };
+    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(cleanupTracking, 30000); });
     child.on('exit', code => {
       procState.state = 'exited'; procState.exitCode = code;
       if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); }
-      setTimeout(() => { runningProcs.delete(trackId); if (sessionId) sessionBusy.delete(sessionId); }, 30000);
+      setTimeout(cleanupTracking, 30000);
     });
 
     // 180s 超时
@@ -356,6 +368,7 @@ app.post('/api/run-claude', async (req, res) => {
   } catch (err) {
     runningProcs.delete(trackId);
     if (sessionId) sessionBusy.delete(sessionId);
+    if (dbSessionId) dbToTrack.delete(dbSessionId);
     res.status(500).json({ status: 'completed', stdout: '', stderr: err.message, code: 1 });
   }
 });
@@ -880,15 +893,25 @@ app.post('/api/bridge/ask', (req, res) => {
 app.post('/api/stop-claude', (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-  const entry = runningProcs.get(sessionId);
+  // 支持 DB session ID（纯数字）→ trackId 翻译（新建会话没有 UUID 时 Gateway 传 DB ID）
+  let lookupId = sessionId;
+  if (/^\d+$/.test(sessionId)) {
+    const translated = dbToTrack.get(sessionId);
+    if (translated) lookupId = translated;
+  }
+  const entry = runningProcs.get(lookupId);
   // entry 可能是 ChildProcess（非 TG exec 模式）或 procState 对象（TG spawn 模式）
   const child = entry?.child || entry; // procState 对象有 .child 属性；旧格式直接是 ChildProcess
   if (child && typeof child.pid === 'number') {
     try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
     // 清理 procState
     if (entry?.state) entry.state = 'exited';
-    runningProcs.delete(sessionId);
-    sessionBusy.delete(sessionId);
+    runningProcs.delete(lookupId);
+    sessionBusy.delete(lookupId);
+    // 清理 DB → trackId 映射
+    if (sessionId !== lookupId) dbToTrack.delete(sessionId);
+    for (const [dbId, tid] of dbToTrack) { if (tid === lookupId) { dbToTrack.delete(dbId); break; } }
+    console.log(`[STOP] Killed pid=${child.pid} sessionId=${sessionId} lookupId=${lookupId}`);
     res.json({ status: 'killed', pid: child.pid });
   } else {
     // fallback: 按 session UUID 搜 claude 命令行
@@ -901,8 +924,10 @@ app.post('/api/stop-claude', (req, res) => {
       for (const pid of pids) {
         try { execSync(`taskkill /f /pid ${pid}`, { timeout: 3000, windowsHide: true }); } catch {}
       }
+      console.log(`[STOP] Fallback wmic search sessionId=${sessionId} killed=${pids.length}`);
       res.json({ status: 'killed_by_search', count: pids.length });
     } catch {
+      console.log(`[STOP] Not found: sessionId=${sessionId}`);
       res.json({ status: 'not_found' });
     }
   }

@@ -29,6 +29,7 @@ function agentCall(method, path, body = null, timeout = AGENT_TIMEOUT) {
 async function execClaude(sessionId, message, options = {}) {
   const body = { sessionId, message, cwd: options.cwd };
   if (options.platform) body.platform = options.platform;
+  if (options.dbSessionId != null) body.dbSessionId = options.dbSessionId;
   // TG 流式模式超时更短（每次里程碑 120s），非 TG 保持 185s
   const timeout = options.platform === 'telegram' ? 185000 : 185000;
   const res = await agentCall('POST', '/api/run-claude', body, timeout);

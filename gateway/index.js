@@ -94,7 +94,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     if (c?._kbdMsgs && c._kbdMsgs.length > 0) {
       console.log(`[KBD] Clearing ${c._kbdMsgs.length} keyboards for chat ${cid}:`, c._kbdMsgs);
       for (const id of c._kbdMsgs) {
-        telegram.editMessageReplyMarkup(cid, id, {}).catch(err => console.error(`[KBD] Failed to clear msg ${id}:`, err.message));
+        telegram.editMessageReplyMarkup(cid, id, { inline_keyboard: [] }).catch(err => console.error(`[KBD] Failed to clear msg ${id}:`, err.message));
       }
       c._kbdMsgs = [];
       cacheSet(cid, c);
@@ -333,10 +333,10 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       for (const as of activeStop) {
         updateSessionStatus(as.id, 'idle');
         markIdle(as.id, as.claude_session_id);
-        // 调 Agent 杀掉正在跑的 Claude 进程
-        if (as.claude_session_id) {
-          agentCall('POST', '/api/stop-claude', { sessionId: as.claude_session_id }, 5000).catch(() => {});
-        }
+        // 调 Agent 杀掉正在跑的 Claude 进程（UUID 或 DB session ID）
+        const stopId = as.claude_session_id || String(as.id);
+        console.log(`[STOP] x:stop → killing sessionId=${stopId} (uuid=${as.claude_session_id || 'null'} db=${as.id})`);
+        agentCall('POST', '/api/stop-claude', { sessionId: stopId }, 5000).catch(err => console.error(`[STOP] stop-claude failed:`, err.message));
       }
       // 编辑"处理中"消息 → 等待 execClaude 返回部分输出后自动覆盖
       const pendingId = cached?._pendingMsgId;
@@ -1068,7 +1068,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
   }
 
   try {
-    const result = await execClaude(claudeSid, message, { cwd: group.project_path, platform: pf });
+    const result = await execClaude(claudeSid, message, { cwd: group.project_path, platform: pf, dbSessionId: s ? s.id : null });
 
     // ── TG 权限交互：检测到 Claude 需要批准 ──
     if (result.status === 'permission_needed' && pf === 'telegram') {
@@ -1121,6 +1121,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
 
     if (pf === 'telegram' && tgPendingMsgId && s && !isBusy(s.id)) {
       // 已被停止 → 显示部分输出 + "已中断"标记
+      console.log(`[STOP] Completion: session=${s.session_name} db=${s.id} stdout=${(result.stdout||'').length}B stderr=${(result.stderr||'').length}B code=${result.code || 0}`);
       const partial = output || '(无输出)';
       await telegram.editMessageText(chatId, tgPendingMsgId, `Claude·${name}:\n${partial}\n\n⏹ 已中断`, null, true);
     } else if (pf === 'telegram' && tgPendingMsgId) {
@@ -1197,7 +1198,7 @@ app.post(config.telegram.webhookPath, express.json(), async (req, res) => {
       cacheSet(chatId, existingCache);
       // 非翻页回调：移除原消息键盘
       if (!data.startsWith('v:')) {
-        telegram.editMessageReplyMarkup(chatId, msgId, {}).catch(() => {});
+        telegram.editMessageReplyMarkup(chatId, msgId, { inline_keyboard: [] }).catch(() => {});
       }
       await handleMessage(chatId, userId, data, 'telegram');
       return;
@@ -1214,7 +1215,8 @@ app.post(config.telegram.webhookPath, express.json(), async (req, res) => {
     }
     await handleMessage(chatId, userId, text, 'telegram');
   } catch (err) {
-    console.error('TG webhook error:', err.message);
+    const detail = err.response?.data?.description || err.response?.data || '';
+    console.error('TG webhook error:', err.message, detail ? '| TG:' + JSON.stringify(detail).slice(0, 300) : '');
   }
 });
 
