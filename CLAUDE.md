@@ -99,7 +99,7 @@ Windows (Mote-Office):
 
 ---
 
-## 当前状态 (v1.7 — 2026-07-23)
+## 当前状态 (v1.8 — 2026-08-11)
 
 ### 已工作
 - 企业微信消息接收/回复
@@ -134,6 +134,8 @@ Windows (Mote-Office):
   - Bridge 会话：Agent `run-claude` 汇合点 `upsertCastBridge()` 机械登记（源=🌉 Bridge），不靠 hook 在 pipe 模式触发
   - upsert 幂等：按 UUID8 匹配，Agent 只刷新名称/时间，**保留会话自己声明的角色/在做**
   - 设计动因：进程活性可嗅探（查 `--resume` UUID），但「谁是主线 vs 谁是审计」是角色语义，机器推不出，只能由会话自己声明
+
+- **TG 真流式输出**（2026-08-11）：Agent 用 `claude -p --output-format stream-json --include-partial-messages --verbose` 替代 `claude --resume`，Claude 输出 token 级 `text_delta` 事件 → Agent 解析为 NDJSON chunk → Gateway 实时编辑 TG 消息。解决了 pipe 全缓冲导致输出一次性到达的问题。流式过程中停止按钮始终可见，中断后保留部分输出
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
@@ -210,6 +212,7 @@ Windows (Mote-Office):
 5. **chronicle sync 会「诈尸」已删项目文件夹**（2026-07-09 修复）— `writeChronicle` 从 JSONL 读出老 `cwd`，用 `mkdirSync(recursive)` 建 `.bridge/sessions/`。若用户已删该项目文件夹，recursive 会把整条路径**连同已删的顶层文件夹一起重建**（只剩一个含 `.bridge/` 的空壳）。因为历史会话 JSONL 永远躺在 `~/.claude/projects/`，每次 Bridge 活动 sync 一跑就复活一次。**修复**：`writeChronicle` / `upsertCastBridge` 写入前先 `fs.existsSync(projectPath)`，项目没了就跳过，绝不 mkdir 复活。教训：任何"从持久化的死路径重建目录"的逻辑都要先校验目标是否仍存在。
 6. **chronicle sync 同步全量读是潜在阻塞源（附一次误诊教训）**（2026-07-12 改进）— Agent `syncChronicles()` 每 60 秒被 Gateway 触发，**同步 `readFileSync` 把所有项目所有 JSONL 整个重读一遍**。会话 JSONL 涨大后（马拉松会话可达 MB 级），单线程会被这堆同步读卡住、阻塞 Agent 其它 HTTP 响应——是真实隐患。**改进**：① `fs.statSync` 比大小，JSONL 只追加、大小没变就跳过不读；② 改 `await fs.promises.readFile` 异步读，让出事件循环。**⚠️ 误诊教训**：排查"企微回复变慢/不回"时，我一度咬定是这个 sync 阻塞（还先后错怪过 IPv6、mihomo），全错——真因是**断电后服务器出站网络劣化**（`ping 223.5.5.5` 100% 丢包、qyapi TCP 连不上），重启路由器即好，与代码无关。教训：①定时全量同步读确是事件循环杀手，该修；②但别把"自己能想到的代码问题"当成症状的因，先用证据（`curl -w`/`ping` 一测）定位真因，这次真因在网络层。
 7. **Claude Code v2.1.220+ 所有会话都是 `claude-vscode` entrypoint**（2026-08-06 发现）— 旧版 (v2.1.197) Agent pipe 模式创建的会话 `entrypoint: "sdk-cli"`，VS Code 看不见（幽灵会话）。v2.1.220+ 后不管从哪调用，只要 VS Code 在运行就注册为 `claude-vscode`。**影响**：① 幽灵会话问题自动消失（TG 创建的会话 VS Code 也能看到）② 旧的 entrypoint 区分 Bridge/VS Code 会话的逻辑失效 ③ `[🌉]` 标注改为从 Gateway SQLite `sessions` 表判断（`getBridgeSessionIds()`），不再依赖 JSONL entrypoint。
+8. **Pipe 全缓冲导致「假流式」**（2026-08-11 修复）— `spawn('cmd.exe', ...)` 的 stdout 是 pipe（不是 TTY），Claude CLI 检测到非 TTY → 切换为全缓冲（~4KB）。短响应全部塞在一个 buffer 里 → Node.js `child.stdout.on('data')` 只触发一次 → NDJSON 流式管线收到 1 个 chunk → TG 上输出瞬间出现（用户看不到过程，容易等不及点 stop）。**根因**：Claude CLI 是编译后二进制（`claude.exe`），内部用 `isatty()` 决定缓冲策略，不是我们能改的。**修复**：用 `claude -p --output-format stream-json --include-partial-messages --verbose`，stream-json 格式绕过 pipe 缓冲——每生成一个 token 就写一行 JSON 到 stdout，Node.js 逐行收到实时 chunk。代价：① 必须加 `--verbose`（stream-json 前置条件）② 输出包含 thinking 块（Agent 解析时跳过 `thinking_delta`，只转发 `text_delta`）③ 仅 TG 使用（企微保留旧路径）。
 
 ### 🆕 新洞察：Bridge = 会话间通信总线
 - Gateway 已在中间，双向都能走消息
