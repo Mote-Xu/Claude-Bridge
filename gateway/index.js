@@ -1080,11 +1080,11 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
       let streamReq = null;
       const EDIT_DEBOUNCE = 500; // ms，节流 TG 编辑
 
-      const editLive = async (text, markup) => {
+      const stopKb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
+      const editLive = async (text, markup, force) => {
         if (!tgPendingMsgId) return;
         const now = Date.now();
-        if (markup) { lastEditTime = 0; } // 权限键盘立即刷
-        if (now - lastEditTime < EDIT_DEBOUNCE) return;
+        if (!force && now - lastEditTime < EDIT_DEBOUNCE) return;
         lastEditTime = now;
         await telegram.editMessageText(chatId, tgPendingMsgId, text, markup || null, true).catch(() => {});
       };
@@ -1096,7 +1096,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
             const display = accumulated.length > 3500
               ? `...${accumulated.slice(-3500)}`
               : accumulated;
-            editLive(`Claude·${name}:\n${display}\n\n⏳ 生成中...`);
+            editLive(`Claude·${name}:\n${display}\n\n⏳ 生成中...`, stopKb);
           },
           onPermission(evt) {
             resolve({ status: 'permission_needed', pendingSessionId: evt.pendingSessionId, stdout: evt.stdout, stderr: evt.stderr || '' });
