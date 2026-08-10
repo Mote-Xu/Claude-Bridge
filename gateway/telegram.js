@@ -60,8 +60,8 @@ async function setWebhook(baseUrl) {
         { command: 'switch', description: '🔄 切换项目 (例: /switch home-lab)' },
         { command: 'status', description: '📊 查看执行状态' },
         { command: 'help', description: '❓ 帮助' },
-        { command: 'leave', description: '🚪 退出当前项目' },
         { command: 'hidden', description: '🙈 隐藏列表' },
+        { command: 'leave', description: '🚪 退出当前项目' },
         { command: 'kill_vscode', description: '💻 关闭 VS Code' },
       ],
     });
