@@ -4,6 +4,7 @@
 
 const express = require('express');
 const { exec, execSync, spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -436,11 +437,29 @@ app.post('/api/run-claude', async (req, res) => {
         cleanupTracking();
       });
 
-      // Gateway 断开 → 杀 Claude 进程
+      // Gateway 断开 / stop → 杀 Claude 进程 + 保存部分输出到 JSONL
       res.on('close', () => {
         if (procState.state !== 'exited') {
           try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
           procState.state = 'exited'; procState.exitCode = 1;
+          // Claude 被 kill 时来不及写 JSONL，手动补写部分输出
+          if (streamAccumulated && streamSessionId && cwd) {
+            try {
+              const encoded = encodeProject(cwd);
+              const jsonlPath = path.join(PROJECTS_DIR, encoded, streamSessionId + '.jsonl');
+              if (fs.existsSync(jsonlPath)) {
+                const entry = JSON.stringify({
+                  type: 'assistant',
+                  message: { role: 'assistant', content: streamAccumulated },
+                  timestamp: new Date().toISOString(),
+                  uuid: crypto.randomUUID(),
+                  session_id: streamSessionId,
+                  _interrupted: true,
+                });
+                fs.appendFileSync(jsonlPath, entry + '\n', 'utf-8');
+              }
+            } catch {}
+          }
         }
       });
 
