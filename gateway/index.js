@@ -1093,7 +1093,6 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
         streamReq = execClaudeStream(claudeSid, message, { cwd: group.project_path, platform: 'telegram' }, {
           onChunk(text) {
             accumulated += text;
-            // 只显示末尾 ~3500 字符（TG 上限 4096）
             const display = accumulated.length > 3500
               ? `...${accumulated.slice(-3500)}`
               : accumulated;
