@@ -342,11 +342,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
         console.log(`[STOP] x:stop → killing db=${stopId} name=${as.session_name} uuid=${as.claude_session_id || 'null'}`);
         agentCall('POST', '/api/stop-claude', { sessionId: stopId }, 5000).catch(err => console.error(`[STOP] stop-claude failed:`, err.message));
       }
-      // 编辑"处理中"消息 → 等待 execClaude 返回部分输出后自动覆盖
-      const pendingId = cached?._pendingMsgId;
-      if (pendingId) {
-        telegram.editMessageText(chatId, pendingId, '⏹ 正在中断...', null, true).catch(() => {});
-      }
+      // handleSessionMessage 会在 Promise 解决后显示部分输出 + "⏹ 已中断"
       return;
     }
     // 未识别的 callback，忽略
