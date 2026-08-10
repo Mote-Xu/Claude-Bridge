@@ -439,7 +439,7 @@ app.post('/api/run-claude', async (req, res) => {
       // Gateway 断开 → 杀 Claude 进程
       res.on('close', () => {
         if (procState.state !== 'exited') {
-          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+          try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
           procState.state = 'exited'; procState.exitCode = 1;
         }
       });
@@ -447,7 +447,7 @@ app.post('/api/run-claude', async (req, res) => {
       // 180s 超时
       const streamTimeout = setTimeout(() => {
         if (procState.state !== 'exited') {
-          try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+          try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
           procState.state = 'exited'; procState.exitCode = 1;
           endStream({ type: 'done', status: 'completed', stdout: streamAccumulated || procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
         }
@@ -494,7 +494,7 @@ app.post('/api/run-claude', async (req, res) => {
 
     // 180s 超时
     const timeout = setTimeout(() => {
-      if (procState.state !== 'exited') { try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {} procState.state = 'exited'; procState.exitCode = 1; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1 }); } }
+      if (procState.state !== 'exited') { try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {} procState.state = 'exited'; procState.exitCode = 1; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1 }); } }
     }, 180000);
 
     child.stdin.write(message + '\n');
@@ -1047,7 +1047,7 @@ app.post('/api/stop-claude', (req, res) => {
   // entry 可能是 ChildProcess（非 TG exec 模式）或 procState 对象（TG spawn 模式）
   const child = entry?.child || entry; // procState 对象有 .child 属性；旧格式直接是 ChildProcess
   if (child && typeof child.pid === 'number') {
-    try { execSync(`taskkill /f /pid ${child.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
+    try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
     // 清理 procState
     if (entry?.state) entry.state = 'exited';
     runningProcs.delete(lookupId);
@@ -1066,7 +1066,7 @@ app.post('/api/stop-claude', (req, res) => {
       );
       const pids = result.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
       for (const pid of pids) {
-        try { execSync(`taskkill /f /pid ${pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+        try { execSync(`taskkill /f /t /pid ${pid}`, { timeout: 3000, windowsHide: true }); } catch {}
       }
       console.log(`[STOP] Fallback wmic search sessionId=${sessionId} killed=${pids.length}`);
       res.json({ status: 'killed_by_search', count: pids.length });
