@@ -52,6 +52,7 @@ function execClaudeStream(sessionId, message, options, callbacks) {
     sessionId, message, cwd: options.cwd,
     platform: options.platform || 'telegram',
     stream: true,
+    ...(options.dbSessionId != null ? { dbSessionId: String(options.dbSessionId) } : {}),
   });
   const timeout = 185000;
 

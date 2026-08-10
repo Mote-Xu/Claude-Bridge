@@ -1090,7 +1090,7 @@ async function handleSessionMessage(chatId, userId, existingSession, message, gr
       };
 
       result = await new Promise((resolve) => {
-        streamReq = execClaudeStream(claudeSid, message, { cwd: group.project_path, platform: 'telegram' }, {
+        streamReq = execClaudeStream(claudeSid, message, { cwd: group.project_path, platform: 'telegram', dbSessionId: s?.id }, {
           onChunk(text) {
             accumulated += text;
             const display = accumulated.length > 3500
