@@ -135,7 +135,7 @@ Windows (Mote-Office):
   - upsert 幂等：按 UUID8 匹配，Agent 只刷新名称/时间，**保留会话自己声明的角色/在做**
   - 设计动因：进程活性可嗅探（查 `--resume` UUID），但「谁是主线 vs 谁是审计」是角色语义，机器推不出，只能由会话自己声明
 
-- **TG 真流式输出**（2026-08-11）：Agent 用 `claude -p --output-format stream-json --include-partial-messages --verbose` 替代 `claude --resume`，Claude 输出 token 级 `text_delta` 事件 → Agent 解析为 NDJSON chunk → Gateway 实时编辑 TG 消息。解决了 pipe 全缓冲导致输出一次性到达的问题。流式过程中停止按钮始终可见，中断后保留部分输出
+- **TG 真流式输出**（2026-08-11）：Agent 用 `claude -p --output-format stream-json --include-partial-messages --verbose` 替代 `claude --resume`，Claude 输出 token 级 `text_delta` 事件 → Agent 解析为 NDJSON chunk → Gateway 实时编辑 TG 消息。解决了 pipe 全缓冲导致输出一次性到达的问题。流式过程中停止按钮始终可见，中断后保留部分输出。**停止后 JSONL 补写**（`_interrupted: true` 标记）— VS Code 会话也能看到中断前的部分输出
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
