@@ -529,6 +529,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       displayHistory.forEach((s, i) => btns.push({ text: (si+i+1).toString(), data: 's:'+(si+i) }));
     }
     if (platform === 'telegram' && btns.length > 0) {
+      clearAllKeyboards(chatId); // 收起旧键盘（项目选择键盘等）
       cacheSet(chatId, { sessions: displayHistory, activeCount: active.length, projectName: group.project_name });
       const res = await rp(msg, telegram.buildInlineKeyboard(btns, 4));
     } else {
@@ -555,6 +556,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     const projects = await discoverProjects();
     const projList3 = Object.entries(projects);
     if (platform === 'telegram' && projList3.length > 0) {
+      clearAllKeyboards(chatId); // 收起旧键盘（当前项目的会话选择键盘等）
       cacheSet(chatId, { projects: projList3.map(([name, cwd]) => ({ name, cwd })) });
       const btns3 = projList3.map(([name], i) => ({ text: name, data: `p:${i}` }));
       await rp('🔄 切换到哪个项目？', telegram.buildInlineKeyboard(btns3, 1));
@@ -608,6 +610,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
       return;
     }
     if (platform === 'telegram') {
+      clearAllKeyboards(chatId); // 收起旧键盘（当前项目的会话选择键盘等）
       cacheSet(chatId, { projects: projList.map(([name, cwd]) => ({ name, cwd })) });
       const btns = projList.map(([name], i) => ({ text: name, data: `p:${i}` }));
       const kb = telegram.buildInlineKeyboard(btns, 1); // 每行 1 个，项目名可能很长
@@ -757,6 +760,7 @@ async function handleMessage(chatId, userId, text, platform = 'wecom') {
     }
 
     if (platform === `telegram` && btns2.length > 0) {
+      clearAllKeyboards(chatId); // 收起旧键盘（项目选择键盘等）
       cacheSet(chatId, { sessions: displayHistory2, activeCount: active.length, projectName: group.project_name });
       await rp(msg, telegram.buildInlineKeyboard(btns2, 4));
     } else {
