@@ -55,6 +55,7 @@ Gateway 纯路由，Agent 本地执行，企微是 Claude Code 会话集群的**
 - 企微收发消息、@会话名 创建/续接、`--resume` 保持上下文
 - 多项目自动发现、离线排队、会话隐藏/索引
 - `@bridge:notify` — 单向会话间通信（A → B → 用户）
+- TG inline 键盘收起（2026-09-07）— `/switch`/`/projects`/`/list`/多会话选择显示新键盘前先收起旧键盘（`clearAllKeyboards` + `_kbdMsgs` 追踪）
 
 ## 进行中：v1.7 两项新能力
 
