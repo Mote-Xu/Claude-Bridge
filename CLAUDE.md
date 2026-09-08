@@ -137,6 +137,7 @@ Windows (Mote-Office):
 
 - **TG 真流式输出**（2026-08-11）：Agent 用 `claude -p --output-format stream-json --include-partial-messages --verbose` 替代 `claude --resume`，Claude 输出 token 级 `text_delta` 事件 → Agent 解析为 NDJSON chunk → Gateway 实时编辑 TG 消息。解决了 pipe 全缓冲导致输出一次性到达的问题。流式过程中停止按钮始终可见，中断后保留部分输出。**停止后 JSONL 补写**（`_interrupted: true` 标记）— VS Code 会话也能看到中断前的部分输出
 - **TG inline 键盘收起**（2026-09-07）：`/switch`（无参数）、`/projects`、`/list`、多会话选择显示新键盘前先 `clearAllKeyboards(chatId)` 收起旧键盘（会话选择键盘/项目选择键盘不叠加）。键盘追踪机制：`trackKeyboardMsg` 记录带键盘消息 ID 到 `callbackCache._kbdMsgs`，`clearAllKeyboards` 批量 `editMessageReplyMarkup` 清空
+- **长命令不误杀**（2026-09-08）：Agent 流式/非流式路径固定超时（180s）→ **30min 零输出 idle watchdog**（stdout/stderr 有活动即续期；超时分支同样补写 JSONL `_interrupted`）。gateway `http.request` timeout 同步放宽至 30min——Node timeout 是 socket 空闲超时，185s 会先于 Agent 断连接触发 `res.on('close')` 误杀（stardust 语音模拟 218s 实测）。Agent watchdog 是超时的唯一裁决者
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）

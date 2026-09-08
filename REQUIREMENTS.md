@@ -60,6 +60,7 @@
 - [x] `.bridge/sessions/@会话名.md` — 每个会话的完整输入输出公开透明
 - [x] `/status` / `状态` — 查询当前正在执行的会话（JSONL mtime 30s + Agent busy）
 - [x] TG inline 键盘收起（2026-09-07）— `/switch`/`/projects`/`/list`/多会话选择显示新键盘前先收起旧键盘
+- [x] 长命令不误杀（2026-09-08）— Agent 固定超时（180s）→ 30min 零输出 idle watchdog；gateway socket 超时对齐放行，Agent 为唯一超时裁决者
 - [ ] `BRIDGE_LOG.md` 双层结构 — CLUSTER_SNAPSHOT（覆盖写入）+ RECENT_LOGS（滚动 15 条）
 - [ ] 会话启动按需感知 — Level 0 默认（CLAUDE.md+TASK_BOARD）→ Level 1 按需（BRIDGE_LOG）
 - [ ] CLAUDE.md 结构化分区 — 架构区只读 / 决策区追加
