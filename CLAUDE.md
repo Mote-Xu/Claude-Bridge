@@ -140,6 +140,8 @@ Windows (Mote-Office):
 - **长命令不误杀**（2026-09-08）：Agent 流式/非流式路径固定超时（180s）→ **30min 零输出 idle watchdog**（stdout/stderr 有活动即续期；超时分支同样补写 JSONL `_interrupted`）。gateway `http.request` timeout 同步放宽至 30min——Node timeout 是 socket 空闲超时，185s 会先于 Agent 断连接触发 `res.on('close')` 误杀。Agent watchdog 是超时的唯一裁决者
 - **TG 排队任务流式执行**（2026-09-08）：原 drain 队列走非流式 `execClaude`——TG 无反馈 + 受 gateway 185s socket 超时影响（18:06 「Agent timeout」实例恰为 3min）。改为流式：`📤 排队任务开始执行...` 带 ⏹ 停止按钮、逐 token 节流原地编辑、完成/中断编辑最终态。排队任务遇权限请求（permission_needed）跳过继续下一个（tgPermissionState 按 chatId 单值，与手动操作冲突）
 - **⚠️ Agent 双守护竞争（2026-09-08 清理）**：Startup 目录 `Claude-Bridge-Agent.vbs`（8-06 自启）+ 手动 `wscript agent\start-hidden.vbs` 同时运行 → 两组 VBS 守护循环拉起同一 Agent，一个绑 9877 成功、另一个 EADDRINUSE 崩 → 5s 再拉起再崩，**42 万次崩溃、130MB crash log（8-12 起）**。每次 reload/崩溃重启都搅局运行中的 TG 流 → 疑似「TG 操作突然中断」的隐性主因之一。**唯一守护 = Startup 版**，`start-hidden.vbs` 仅作手动启动用，勿与 Startup 同时跑。crash log 位置 `%TEMP%\claude-bridge-agent-crash.log`
+  - **⚠️ 孤儿 agent 残留（2026-09-09 检查发现）**：只杀守护进程不够——守护拉起的 agent 进程若还占着 9877，Startup 守护拉起的新 agent 仍会 EADDRINUSE 循环崩（实测 19:06-03:21 又积累 5436 次）。**清理双守护时必须连 agent 进程一起杀**（`taskkill /f /pid <agent-pid>`），让唯一守护重新拉起。验证循环停止：对比 crash log 大小 20 秒不增长
+  - **resume 活跃会话 = 预期冲突**：pipe resume 正在 VS Code 活跃运行的会话 → 双进程写同一 JSONL → 新进程立即退出（code=1 无 stderr）。不是 bug，不要 resume 活跃会话
 
 ### 未完成
 - 手机创建的新会话在 VS Code 不显示（pipe 模式天生限制）
