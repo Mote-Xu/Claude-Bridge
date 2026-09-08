@@ -306,7 +306,11 @@ app.post('/api/run-claude', async (req, res) => {
   try {
     const cmdExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'cmd.exe') : 'C:\\Windows\\System32\\cmd.exe';
     const sys32 = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
-    const execEnv = { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1' };
+    // CLAUDE_HOME 必填（2026-09-08）：claude CLI 2.1.220+ 依赖它定位 session store，
+    // 缺失时 --resume 直接报 `No conversation found`。用户级 env 没有此变量，
+    // 由 Agent 显式注入（spawn 环境继承自 VBS 启动的 Agent 进程）。
+    // 非流式路径共用该 execEnv，修复对企微 resume 同样生效。
+    const execEnv = { ...process.env, CI: 'true', CLAUDE_NO_TUI: '1', CLAUDE_HOME: path.join(os.homedir(), '.claude') };
     execEnv.PATH = sys32 + ';' + (process.env.PATH || '');
     // stream-json 模式：-p + --output-format stream-json --include-partial-messages --verbose
     // 消息通过 stdin 传入，输出为逐行 JSON（token 级别流式，解决 pipe 全缓冲问题）
