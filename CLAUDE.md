@@ -138,6 +138,7 @@ Windows (Mote-Office):
 - **TG 真流式输出**（2026-08-11）：Agent 用 `claude -p --output-format stream-json --include-partial-messages --verbose` 替代 `claude --resume`，Claude 输出 token 级 `text_delta` 事件 → Agent 解析为 NDJSON chunk → Gateway 实时编辑 TG 消息。解决了 pipe 全缓冲导致输出一次性到达的问题。流式过程中停止按钮始终可见，中断后保留部分输出。**停止后 JSONL 补写**（`_interrupted: true` 标记）— VS Code 会话也能看到中断前的部分输出
 - **TG inline 键盘收起**（2026-09-07）：`/switch`（无参数）、`/projects`、`/list`、多会话选择显示新键盘前先 `clearAllKeyboards(chatId)` 收起旧键盘（会话选择键盘/项目选择键盘不叠加）。键盘追踪机制：`trackKeyboardMsg` 记录带键盘消息 ID 到 `callbackCache._kbdMsgs`，`clearAllKeyboards` 批量 `editMessageReplyMarkup` 清空
 - **长命令不误杀**（2026-09-08）：Agent 流式/非流式路径固定超时（180s）→ **30min 零输出 idle watchdog**（stdout/stderr 有活动即续期；超时分支同样补写 JSONL `_interrupted`）。gateway `http.request` timeout 同步放宽至 30min——Node timeout 是 socket 空闲超时，185s 会先于 Agent 断连接触发 `res.on('close')` 误杀。Agent watchdog 是超时的唯一裁决者
+- **TG 排队任务流式执行**（2026-09-08）：原 drain 队列走非流式 `execClaude`——TG 无反馈 + 受 gateway 185s socket 超时影响（18:06 「Agent timeout」实例恰为 3min）。改为流式：`📤 排队任务开始执行...` 带 ⏹ 停止按钮、逐 token 节流原地编辑、完成/中断编辑最终态。排队任务遇权限请求（permission_needed）跳过继续下一个（tgPermissionState 按 chatId 单值，与手动操作冲突）
 - **⚠️ Agent 双守护竞争（2026-09-08 清理）**：Startup 目录 `Claude-Bridge-Agent.vbs`（8-06 自启）+ 手动 `wscript agent\start-hidden.vbs` 同时运行 → 两组 VBS 守护循环拉起同一 Agent，一个绑 9877 成功、另一个 EADDRINUSE 崩 → 5s 再拉起再崩，**42 万次崩溃、130MB crash log（8-12 起）**。每次 reload/崩溃重启都搅局运行中的 TG 流 → 疑似「TG 操作突然中断」的隐性主因之一。**唯一守护 = Startup 版**，`start-hidden.vbs` 仅作手动启动用，勿与 Startup 同时跑。crash log 位置 `%TEMP%\claude-bridge-agent-crash.log`
 
 ### 未完成

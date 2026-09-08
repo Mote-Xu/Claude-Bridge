@@ -58,6 +58,7 @@ Gateway 纯路由，Agent 本地执行，企微是 Claude Code 会话集群的**
 - TG inline 键盘收起（2026-09-07）— `/switch`/`/projects`/`/list`/多会话选择显示新键盘前先收起旧键盘（`clearAllKeyboards` + `_kbdMsgs` 追踪）
 - 长命令不误杀（2026-09-08）— Agent 固定超时（180s）→ 30min 零输出 idle watchdog（有活动即续期）；gateway socket 超时对齐放行（Node timeout 是空闲语义，185s 会先断连触发误杀）。根因案例：stardust 会话 `claude -p` 模式下跑 218s 的静默语音模拟命令被 180s 超时误杀。实测 200s 静默 Node 命令通过验证
 - Agent 单守护（2026-09-08）— 双 VBS 守护（Startup + start-hidden.vbs）竞争同一端口：EADDRINUSE 崩溃循环 42 万次/130MB（8-12 起），疑为「TG 操作突然中断」隐性主因。已清理冗余守护，唯一守护 = Startup\Claude-Bridge-Agent.vbs
+- TG 排队任务流式（2026-09-08）— drain 队列改流式执行（⏹ 停止按钮 + 原地编辑）。原非流式路径：①TG 上无反馈 ②受 gateway 185s socket 超时影响（实例：18:03 入队 → 18:06「Agent timeout」，恰好 3min）。排队任务权限请求暂不支持交互，跳过继续下一个
 
 ## 进行中：v1.7 两项新能力
 

@@ -62,6 +62,7 @@
 - [x] TG inline 键盘收起（2026-09-07）— `/switch`/`/projects`/`/list`/多会话选择显示新键盘前先收起旧键盘
 - [x] 长命令不误杀（2026-09-08）— Agent 固定超时（180s）→ 30min 零输出 idle watchdog；gateway socket 超时对齐放行，Agent 为唯一超时裁决者
 - [x] Agent 单守护（2026-09-08）— 清理双 VBS 守护（Startup + start-hidden）导致的 EADDRINUSE 崩溃循环（8-12 起 42 万次），唯一守护 = Startup\Claude-Bridge-Agent.vbs
+- [x] TG 排队任务流式（2026-09-08）— drain 队列 TG 走流式（停止按钮+原地编辑）；原非流式导致无反馈 + 受 185s 超时影响（「Agent timeout」实例）
 - [ ] `BRIDGE_LOG.md` 双层结构 — CLUSTER_SNAPSHOT（覆盖写入）+ RECENT_LOGS（滚动 15 条）
 - [ ] 会话启动按需感知 — Level 0 默认（CLAUDE.md+TASK_BOARD）→ Level 1 按需（BRIDGE_LOG）
 - [ ] CLAUDE.md 结构化分区 — 架构区只读 / 决策区追加
