@@ -932,19 +932,88 @@ async function drainSessionQueue(chatId, sessionId, group) {
 
   markBusy(sessionId, claudeSid);
   try {
-    await reply(task.chat_id, task.sender, `📤 @${sessionName} 排队任务开始执行...`, pf);
-    const result = await execClaude(claudeSid, task.message, { cwd: group.project_path });
-    const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
-    auditLog(chatId, sessionId, 'out', output);
+    if (pf === 'telegram') {
+      // ── TG 排队任务同样流式（2026-09-08）──
+      // 原非流式 execClaude：TG 上无任何反馈 + 受固定超时影响（18:06「Agent timeout」实例）。
+      // 改为带 ⏹ 停止按钮 + 逐 token 原地编辑，与主消息一致；停止/中断后编辑「已中断」并递归下一个。
+      const EDIT_DEBOUNCE = 500;
+      let accumulated = '';
+      let lastEditTime = 0;
+      const stopKb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
+      const sent = await telegram.sendMessage(chatId, `📤 @${sessionName} 排队任务开始执行...\n⏳ 处理中...`, { replyMarkup: stopKb });
+      const taskMsgId = sent?.message_id;
 
-    if (s) {
-      touchSession(s.id);
-      if (result.newSessionId) updateClaudeSessionId(s.id, result.newSessionId);
+      const editLive = async (text, markup, force) => {
+        if (!taskMsgId) return;
+        const now = Date.now();
+        if (!force && now - lastEditTime < EDIT_DEBOUNCE) return;
+        lastEditTime = now;
+        await telegram.editMessageText(chatId, taskMsgId, text, markup || null, true).catch(() => {});
+      };
+
+      const result = await new Promise((resolve) => {
+        const streamReq = execClaudeStream(claudeSid, task.message, { cwd: group.project_path, platform: 'telegram', dbSessionId: s?.id }, {
+          onChunk(text) {
+            accumulated += text;
+            const display = accumulated.length > 3500 ? `...${accumulated.slice(-3500)}` : accumulated;
+            editLive(`📤 @${sessionName} 排队执行中:\n${display}\n\n⏳ 生成中...`, stopKb);
+          },
+          onPermission(evt) {
+            resolve({ status: 'permission_needed', pendingSessionId: evt.pendingSessionId, stdout: evt.stdout, stderr: evt.stderr || '' });
+          },
+          onDone(evt) {
+            resolve({
+              status: evt.status || 'completed',
+              stdout: evt.stdout || accumulated || '',
+              stderr: evt.stderr || '',
+              code: evt.code || 0,
+              newSessionId: evt.newSessionId || null,
+            });
+          },
+        });
+        if (s) streamReqs.set(s.id, streamReq);
+      });
+      if (s) streamReqs.delete(s.id);
+
+      if (result.status === 'permission_needed') {
+        // 排队任务暂不支持权限交互：tgPermissionState 按 chatId 单值，避免与用户手动操作冲突。
+        // 跳过本任务继续下一个（进程已被 Agent 侧保留，pendingSessionId 可后续 writeStdin 续接）
+        await editLive(`📤 @${sessionName} ⚠️ 排队任务需要权限批准，已跳过（排队任务暂不支持权限交互）`, null, true);
+      } else {
+        const full = result.stdout || result.stderr || '(无输出)';
+        const out = full.slice(0, 3800);
+        auditLog(chatId, sessionId, 'out', out);
+        if (s) {
+          touchSession(s.id);
+          if (result.newSessionId) updateClaudeSessionId(s.id, result.newSessionId);
+        }
+        const interrupted = result.code !== 0 && (result.stderr || '').length > 0;
+        const head = interrupted ? '已中断' : '完成';
+        const tail = interrupted ? `\n(${(result.stderr || '').slice(0, 120)})` : '';
+        await editLive(`📤 @${sessionName} 排队任务${head}:\n${out}${tail}`, null, true);
+      }
+    } else {
+      // ── 企微：一次性全部输出 ──
+      await reply(task.chat_id, task.sender, `📤 @${sessionName} 排队任务开始执行...`, pf);
+      const result = await execClaude(claudeSid, task.message, { cwd: group.project_path });
+      const output = (result.stdout || result.stderr || '(无输出)').slice(0, 3800);
+      auditLog(chatId, sessionId, 'out', output);
+
+      if (s) {
+        touchSession(s.id);
+        if (result.newSessionId) updateClaudeSessionId(s.id, result.newSessionId);
+      }
+
+      await reply(task.chat_id, task.sender, `Claude·${sessionName}:\n${output}`, pf);
     }
-
-    await reply(task.chat_id, task.sender, `Claude·${sessionName}:\n${output}`, pf);
   } catch (err) {
-    await reply(task.chat_id, task.sender, `❌ 排队任务失败: ${err.message.slice(0, 200)}`, pf);
+    if (pf === 'telegram') {
+      const kb = telegram.buildInlineKeyboard([[{ text: '⏹ 停止', data: 'x:stop' }]], 1);
+      const sent = await telegram.sendMessage(chatId, `📤 @${sessionName} ❌ 排队任务失败: ${err.message.slice(0, 200)}`, { replyMarkup: kb });
+      if (sent?.message_id) telegram.editMessageText(chatId, sent.message_id, `📤 @${sessionName} ❌ 排队任务失败: ${err.message.slice(0, 200)}`, null, true).catch(() => {});
+    } else {
+      await reply(task.chat_id, task.sender, `❌ 排队任务失败: ${err.message.slice(0, 200)}`, pf);
+    }
   } finally {
     markTaskProcessed(task.id);
     markIdle(sessionId, claudeSid);
