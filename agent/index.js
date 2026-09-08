@@ -363,7 +363,46 @@ app.post('/api/run-claude', async (req, res) => {
       let streamAccumulated = '';            // 累积的纯文本输出
       let streamJsonlBuf = '';               // 行缓冲（JSON 按行拆分）
 
+      // 空闲 watchdog（替代固定时长超时，2026-09-08）：
+      // Claude 执行长工具命令时 stdout 天然静默（stardust 语音模拟 218s 实例），
+      // 固定超时（180s/300s）都会误杀。正确语义 = 只要有任何输出就永不超时，
+      // 只有完全无输出超过 IDLE_KILL_MS（真挂死）才兜底 kill。
+      const IDLE_KILL_MS = 1800000;          // 30 分钟零输出才怀疑挂死
+      let idleTimer = null;
+      const idleReset = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (procState.state === 'exited') return;
+        idleTimer = setTimeout(() => {
+          if (procState.state !== 'exited') {
+            console.log(`[STREAM-IDLE-KILL] no output for ${IDLE_KILL_MS}ms pid=${child.pid} acc=${(streamAccumulated||'').length}B sid=${streamSessionId||'null'}`);
+            try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+            procState.state = 'exited'; procState.exitCode = 1;
+            // 与 kill 分支同样补写部分输出到 JSONL，避免会话上下文「悬空」丢失
+            if (streamAccumulated && streamSessionId && cwd) {
+              try {
+                const encoded = encodeProject(cwd);
+                const jsonlPath = path.join(PROJECTS_DIR, encoded, streamSessionId + '.jsonl');
+                if (fs.existsSync(jsonlPath)) {
+                  const entry = JSON.stringify({
+                    type: 'assistant',
+                    message: { role: 'assistant', content: streamAccumulated },
+                    timestamp: new Date().toISOString(),
+                    uuid: crypto.randomUUID(),
+                    session_id: streamSessionId,
+                    _interrupted: true,
+                  });
+                  fs.appendFileSync(jsonlPath, entry + '\n', 'utf-8');
+                }
+              } catch {}
+            }
+            endStream({ type: 'done', status: 'completed', stdout: streamAccumulated || procState.stdoutBuf, stderr: 'IdleTimeout', code: 1, newSessionId: null });
+          }
+        }, IDLE_KILL_MS);
+      };
+      idleReset();
+
       child.stdout.on('data', d => {
+        idleReset();                         // 有输出 → 重置空闲计时
         const chunk = d.toString('utf-8');
         procState.stdoutBuf += chunk;        // 原始 JSONL 存 procState 用于调试
 
@@ -401,13 +440,15 @@ app.post('/api/run-claude', async (req, res) => {
         }
       });
 
-      child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
+      child.stderr.on('data', d => { idleReset(); procState.stderrBuf += d.toString('utf-8'); });
       child.on('error', err => {
         procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message;
         endStream({ type: 'error', message: err.message });
         cleanupTracking();
       });
+      // 进程结束时清理 idle watchdog
       child.on('exit', code => {
+        if (idleTimer) clearTimeout(idleTimer);
         procState.state = 'exited'; procState.exitCode = code;
         // 处理缓冲中残留的最后一行 JSON
         if (streamJsonlBuf.trim()) {
@@ -463,15 +504,11 @@ app.post('/api/run-claude', async (req, res) => {
         }
       });
 
-      // 180s 超时
-      const streamTimeout = setTimeout(() => {
-        if (procState.state !== 'exited') {
-          try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
-          procState.state = 'exited'; procState.exitCode = 1;
-          endStream({ type: 'done', status: 'completed', stdout: streamAccumulated || procState.stdoutBuf, stderr: 'Timeout', code: 1, newSessionId: null });
-        }
-      }, 180000);
-      res.on('close', () => clearTimeout(streamTimeout));
+      // ⚠️ 固定时长超时已移除（2026-09-08）：
+      // Claude 执行长工具命令时 stdout 天然静默（stardust 语音模拟实测 218s），
+      // 180s/300s 固定值都会误杀正常长命令。改为上方空闲 watchdog（30min 零输出才兜底）。
+      // res close（用户点停止）时进程由上方 res.on('close') 分支 kill
+      res.on('close', () => clearTimeout(idleTimer));
 
       child.stdin.write(message + '\n');
       child.stdin.end();
@@ -480,6 +517,7 @@ app.post('/api/run-claude', async (req, res) => {
 
     // ── 非流式（企微）：积累全部 stdout 后一次返回 ──
     child.stdout.on('data', d => {
+      idleReset2();                          // 有输出 → 重置空闲计时
       procState.stdoutBuf += d.toString('utf-8');
       if (procState.state === 'running' && detectPermissionPrompt(procState.stdoutBuf)) {
         procState.state = 'waiting_permission';
@@ -503,18 +541,33 @@ app.post('/api/run-claude', async (req, res) => {
         if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: permId }); }
       }
     });
-    child.stderr.on('data', d => { procState.stderrBuf += d.toString('utf-8'); });
-    child.on('error', err => { procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(cleanupTracking, 30000); });
+    child.stderr.on('data', d => { idleReset2(); procState.stderrBuf += d.toString('utf-8'); });
+    child.on('error', err => { clearTimeout(idleTimer2); procState.state = 'exited'; procState.exitCode = 1; procState.stderrBuf += err.message; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); } setTimeout(cleanupTracking, 30000); });
     child.on('exit', code => {
+      clearTimeout(idleTimer2);
       procState.state = 'exited'; procState.exitCode = code;
       if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r(buildCompletedResponse(procState, cwd, sessionId)); }
       setTimeout(cleanupTracking, 30000);
     });
 
-    // 180s 超时
-    const timeout = setTimeout(() => {
-      if (procState.state !== 'exited') { try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {} procState.state = 'exited'; procState.exitCode = 1; if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'completed', stdout: procState.stdoutBuf, stderr: 'Timeout', code: 1 }); } }
-    }, 180000);
+    // 空闲 watchdog（替代 180s 固定超时，2026-09-08）：
+    // 企微非流式同样会执行长时间静默的工具命令，固定超时误杀。
+    // 30 分钟完全无输出（stdout+stderr 都无活动）才兜底 kill。
+    const IDLE_KILL_MS2 = 1800000;
+    let idleTimer2 = null;
+    const idleReset2 = () => {
+      if (idleTimer2) clearTimeout(idleTimer2);
+      if (procState.state === 'exited') return;
+      idleTimer2 = setTimeout(() => {
+        if (procState.state !== 'exited') {
+          console.log(`[IDLE-KILL] no output for ${IDLE_KILL_MS2}ms pid=${child.pid}`);
+          try { execSync(`taskkill /f /t /pid ${child.pid}`, { timeout: 3000, windowsHide: true }); } catch {}
+          procState.state = 'exited'; procState.exitCode = 1;
+          if (procState.waitResolve) { const r = procState.waitResolve; procState.waitResolve = null; r({ status: 'completed', stdout: procState.stdoutBuf, stderr: 'IdleTimeout', code: 1 }); }
+        }
+      }, IDLE_KILL_MS2);
+    };
+    idleReset2();
 
     child.stdin.write(message + '\n');
     child.stdin.end();
@@ -526,7 +579,7 @@ app.post('/api/run-claude', async (req, res) => {
       else if (procState.state === 'waiting_permission') resolve({ status: 'permission_needed', stdout: procState.stdoutBuf, stderr: procState.stderrBuf, pendingSessionId: trackId });
       else procState.waitResolve = resolve;
     });
-    clearTimeout(timeout);
+    clearTimeout(idleTimer2);
     res.json(result);
   } catch (err) {
     runningProcs.delete(trackId);

@@ -30,8 +30,11 @@ async function execClaude(sessionId, message, options = {}) {
   const body = { sessionId, message, cwd: options.cwd };
   if (options.platform) body.platform = options.platform;
   if (options.dbSessionId != null) body.dbSessionId = options.dbSessionId;
-  // TG 流式模式超时更短（每次里程碑 120s），非 TG 保持 185s
-  const timeout = options.platform === 'telegram' ? 185000 : 185000;
+  // 与 Agent 空闲 watchdog 对齐（2026-09-08）：
+  // http.request 的 timeout 是 socket 空闲超时——Claude 执行长工具命令时 stdout 静默，
+  // 185s 会先于 Agent 断连接 → Agent res.on('close') 误杀正常长命令（stardust 218s 实例）。
+  // 放宽到 Agent 兜底 kill（30min 零输出）之上，让 Agent 的 watchdog 成为唯一裁决者。
+  const timeout = 1800000;
   const res = await agentCall('POST', '/api/run-claude', body, timeout);
   return {
     status: res.status || 'completed',
@@ -60,7 +63,8 @@ function execClaudeStream(sessionId, message, options, callbacks) {
     hostname: AGENT_HOST, port: AGENT_PORT,
     path: '/api/run-claude', method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-    timeout,
+    // socket 空闲超时 ≥ Agent 的 30min 兜底 kill；Agent 是超时的唯一裁决者
+    timeout: 1800000,
   }, (res) => {
     let buf = '';
     let done = false;
